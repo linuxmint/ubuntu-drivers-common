@@ -2046,13 +2046,6 @@ static int enable_prime(const char *prime_settings,
     int prime_discrete_on = 0;
     int prime_action_on = 0;
 
-    /* We only support Lightdm at this time */
-    if (!is_lightdm_default()) {
-        fprintf(log_handle, "Lightdm is not the default display "
-                            "manager. Nothing to do\n");
-        return 0;
-    }
-
     /* Check if prime_settings is available
      * File doesn't exist or empty
      */
