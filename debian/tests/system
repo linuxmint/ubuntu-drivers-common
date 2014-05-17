@@ -1,0 +1,171 @@
+#!/usr/bin/python3
+
+import sys
+import os.path
+import unittest
+import subprocess
+
+from gi.repository import UMockdev
+
+srcdir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+testsdir = os.path.join(srcdir, 'tests')
+sys.path.append(testsdir)
+
+def program_out(argv):
+    '''Return (exitcode, out, err) from a program call.'''
+
+    prog = subprocess.Popen(argv, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, universal_newlines=True)
+    (out, err) = prog.communicate()
+    return (prog.returncode, out, err)
+
+def program_out_success(argv, self):
+    '''Return out from a successful program call.'''
+
+    (code, out, err) = program_out(argv)
+    self.assertEqual(err, '')
+    self.assertEqual(code, 0)
+    return out
+
+class TestSystem(unittest.TestCase):
+    '''Run ubuntu-drivers on the current system.
+
+    We cannot assume anything about the output here, we just ensure that the
+    program is found and works.
+    '''
+    def test_list(self):
+        '''ubuntu-drivers list succeeds'''
+
+        program_out_success(['ubuntu-drivers', 'list'], self)
+
+    def test_debug(self):
+        '''ubuntu-drivers debug succeeds'''
+
+        o = program_out_success(['ubuntu-drivers', 'debug'], self)
+
+        # let's assume we have at least one pci device
+        self.assertTrue('\npci:' in o)
+
+        # finds detection plugins
+        self.assertTrue('Loading custom detection plugin' in o, o)
+        self.assertTrue('sl-modem' in o, o)
+        self.assertTrue('=== matching driver packages ===' in o, o)
+
+class TestUbuntuDrivers(unittest.TestCase):
+    '''Check that we can detect and install the most common drivers'''
+
+    @classmethod
+    def setUpClass(cls):
+        '''Raise an exception if kernel headers are not installed.
+
+        It could be a @unittest.skip class method but we want a failure
+        because missing headers would mean a broken test environment.
+        '''
+        assert os.path.exists('/usr/src/linux-headers-' + os.uname()[2]), \
+               'Headers not installed for running kernel (%s)' % os.uname()[2]
+
+        # disable hybrid detection
+        os.environ['UBUNTU_DRIVERS_XORG_LOG'] = '/nonexisting'
+
+    def setUp(self):
+        self.testbed = UMockdev.Testbed.new()
+
+    def test_bcmwl(self):
+        '''bcmwl-kernel-source'''
+
+        self.do_test_driver('pci:v000014E4d00004353sv00sd01bc02sc80i00',
+                'bcmwl-kernel-source', 'wl', auto_install=True, allow_errors=True)
+
+    def test_nvidia_304(self):
+        '''nvidia-304'''
+
+        # we have two matches here, only install nvidia-current, not -updates
+        self.do_test_driver('pci:v000010DEd000010C3sv00sd01bc03sc00i00',
+                'nvidia-304', 'nvidia_304', auto_install=False)
+
+    def test_nvidia_304_updates(self):
+        '''nvidia-304-updates'''
+
+        self.do_test_driver('pci:v000010DEd000010C3sv00sd01bc03sc00i00',
+                'nvidia-304-updates', 'nvidia_304_updates', auto_install=False)
+
+    def test_nvidia_331(self):
+        '''nvidia-331'''
+
+        # we have two matches here, only install nvidia-current, not -updates
+        self.do_test_driver('pci:v000010DEd000010C3sv00sd01bc03sc00i00',
+                'nvidia-331', 'nvidia_331', auto_install=False)
+
+    def test_nvidia_331_updates(self):
+        '''nvidia-331-updates'''
+
+        self.do_test_driver('pci:v000010DEd000010C3sv00sd01bc03sc00i00',
+                'nvidia-331-updates', 'nvidia_331_updates', auto_install=False)
+
+    def test_fglrx(self):
+        '''fglrx'''
+
+        # we have two matches here, only install fglrx, not -updates
+        self.do_test_driver('pci:v00001002d0000990Fsv00sd00bc03sc00i00',
+                'fglrx', 'fglrx', auto_install=False)
+
+    def test_fglrx_updates(self):
+        '''fglrx-updates'''
+
+        self.do_test_driver('pci:v00001002d0000990Fsv00sd00bc03sc00i00',
+                'fglrx-updates', 'fglrx_updates', auto_install=False)
+
+    def test_virtualbox(self):
+        '''virtualbox-dkms'''
+
+        self.do_test_driver(None, 'virtualbox-dkms', 'vboxdrv', auto_install=False)
+
+    def do_test_driver(self, alias, package, module, auto_install=True,
+                       allow_errors=False):
+        if alias:
+            self.testbed.add_device('pci', 'mydev', None, ['modalias', alias], [])
+
+            # detection works
+            o = program_out_success(['ubuntu-drivers', 'list'], self)
+            self.assertTrue(package + '\n' in o, o)
+
+        try:
+            if auto_install:
+                # autoinstall works
+                (c, o, e) = program_out(['ubuntu-drivers', 'autoinstall'])
+                self.assertEqual(c, 0, e)
+                if not allow_errors:
+                    self.assertEqual(e, '')
+            else:
+                (c, o, e) = program_out(['apt-get', 'install', '-y', package])
+                self.assertEqual(c, 0, e)
+                if e:
+                    print('\n--- Error output from package installation ---\n%s\n------' % e)
+            self.assertTrue(package in o, o)
+
+            # package is installed
+            o = program_out_success(['dpkg', '-s', package], self)
+            self.assertTrue('Status: install ok installed' in o)
+
+            # module is available
+            if module:
+                o = program_out_success(['modinfo', module], self)
+                self.assertTrue('filename:' in o)
+        finally:
+            # clean up
+            program_out(['apt-get', 'purge', '--auto-remove', '-y', package])
+
+            if module:
+                (c, o, e) = program_out(['modinfo', module])
+                self.assertNotEqual(c, 0)
+                self.assertIn('ERROR', e)
+                self.assertIn('not found', e)
+                self.assertEqual(o, '', o)
+
+# run ourselves through umockdev-wrapper
+if 'umockdev' not in os.environ.get('LD_PRELOAD', ''):
+    os.execvp('umockdev-wrapper', ['umockdev-wrapper'] + sys.argv)
+
+# for autopkgtest we must write to stdout, not stderr, and have an appropriate
+# exit code
+unittest.main(testRunner=unittest.TextTestRunner(stream=sys.stdout, verbosity=2))

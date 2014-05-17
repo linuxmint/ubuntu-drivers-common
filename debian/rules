@@ -1,0 +1,55 @@
+#!/usr/bin/make -f
+DEB_VERSION=$(shell dpkg-parsechangelog | grep ^Version | cut -f2 -d\ |cut -f1 -d-)
+DEB_HOST_ARCH ?= $(shell dpkg-architecture -qDEB_HOST_ARCH)
+py3sdo=set -e; $(foreach py, $(shell py3versions -r), $(py) $(1);)
+
+%:
+	dh "$@" --with python3,apport
+
+override_dh_auto_build:
+	$(call py3sdo, setup.py build)
+
+override_dh_auto_install:
+	$(call py3sdo, setup.py install --root=$(CURDIR)/debian/tmp --install-layout=deb)
+
+override_dh_auto_test:
+ifeq (, $(findstring nocheck, $(DEB_BUILD_OPTIONS)))
+	$(call py3sdo, setup.py egg_info)
+	set -e; $(foreach py, $(shell py3versions -r), PYTHONPATH=. $(py) -B tests/run || [ "$(DEB_HOST_ARCH)" = powerpc ];)
+endif
+
+override_dh_auto_clean:
+	$(call py3sdo, setup.py clean)
+
+override_dh_install:
+	dh_install --fail-missing
+
+	# build dh_modaliases manpage
+	mkdir -p debian/dh-modaliases/usr/share/man/man1
+	pod2man -c Debhelper -r "$(DEB_VERSION)" debhelper/dh_modaliases debian/dh-modaliases/usr/share/man/man1/dh_modaliases.1
+
+	# clean up old upstart conffile for hybrid-detect
+	if [ ! -e debian/ubuntu-drivers-common/usr/bin/hybrid-detect ]; then \
+	    echo "rm_conffile /etc/init/hybrid-gfx.conf 1:0.2.91~" > debian/ubuntu-drivers-common.maintscript; \
+	fi
+
+	# clean up upstart conffile on upgrade on architectures which do not
+	# ship gpu-manager
+	if [ ! -e debian/ubuntu-drivers-common/usr/bin/gpu-manager ]; then \
+	    echo "rm_conffile /etc/init/gpu-manager.conf 1:0.2.91~" >> debian/ubuntu-drivers-common.maintscript; \
+	fi
+
+	# Remove fglrx-pxpress' upstart job
+	echo "rm_conffile /etc/init/amd-config.conf 1:0.2.91.1~" >> debian/ubuntu-drivers-common.maintscript
+
+override_dh_python3:
+	dh_python3 --shebang=/usr/bin/python3
+
+override_dh_clean:
+	rm -f share/hybrid/hybrid-detect
+	rm -f share/hybrid/gpu-manager
+	rm -f quirksreader_test*.txt
+	rm -rf build
+	rm -rf *.egg-info
+	rm -f debian/ubuntu-drivers-common.maintscript
+	dh_clean

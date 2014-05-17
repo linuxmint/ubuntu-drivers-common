@@ -1,0 +1,110 @@
+Source: ubuntu-drivers-common
+Section: admin
+Priority: optional
+Maintainer: Ubuntu Developers <ubuntu-devel-discuss@lists.ubuntu.com>
+Build-Depends: debhelper (>= 9),
+ po-debconf,
+ dh-apport,
+ python3-all (>= 3.2),
+ python3-setuptools,
+ libpciaccess-dev (>= 0.12.1-2),
+ lib32gcc1 [amd64], libc6-i386 [amd64],
+ linux-libc-dev,
+ pkg-config,
+ python3-xkit (>= 0.5.0),
+ aptdaemon,
+ python3-aptdaemon.pkcompat,
+ python3-aptdaemon.test (>= 0.43+bzr810-0ubuntu2~),
+ python3-gi,
+ gir1.2-glib-2.0,
+ gir1.2-packagekitglib-1.0,
+ gir1.2-umockdev-1.0,
+ umockdev,
+ alsa-utils,
+ apt-utils,
+ dbus,
+ udev,
+ pciutils,
+ libdrm-dev,
+ python3-dbus
+Standards-Version: 3.9.5
+Vcs-Git: git://github.com/tseliot/ubuntu-drivers-common.git
+Vcs-Browser: https://github.com/tseliot/ubuntu-drivers-common
+X-Python3-Version: >= 3.2
+XS-Testsuite: autopkgtest
+
+Package: ubuntu-drivers-common
+Architecture: any
+Pre-Depends: dpkg (>= 1.15.7.2)
+Depends: ${python3:Depends},
+ ${misc:Depends},
+ ${shlibs:Depends},
+ debconf (>= 0.5.00) | debconf-2.0,
+ pciutils,
+ python3-apt,
+ python3-xkit,
+ udev (>= 204-0ubuntu4~),
+ pciutils,
+ usbutils,
+ alsa-utils,
+ kmod | module-init-tools,
+Suggests: python3-aptdaemon.pkcompat
+Replaces: nvidia-common (<< 1:0.2.46), jockey-common, jockey-gtk, jockey-kde
+Conflicts: nvidia-common (<< 1:0.2.46), jockey-common, jockey-gtk, jockey-kde
+Breaks: nvidia-prime (<< 0.6)
+Provides: nvidia-common, jockey-common, jockey-gtk, jockey-kde
+Enhances: packagekit-system-interface
+Description: Detect and install additional Ubuntu driver packages
+ This package aggregates and abstracts Ubuntu specific logic and knowledge
+ about third-party driver packages. It provides:
+ .
+  - a Python API for detecting driver packages for a particular piece of
+    hardware or the whole system.
+ .
+  - an "ubuntu-drivers" command line tool to list or install driver packages
+    (mostly for integration in installers).
+ .
+  - a PackageKit plugin for WhatProvides() for types MODALIAS and
+    HARDWARE_DRIVER, to do the same queries as above through the PackageKit API
+    (for using in non-distro specific GUIs). This works with aptdaemon's
+    PackageKit compatibility layer (python3-aptdaemon.pkcompat) and with
+    PackageKit's apt backend, but _not_ with the PackageKit aptcc backend.
+ .
+  - some NVidia specific support code to find the most appropriate driver
+    version, as well as setting up the alternatives symlinks that the
+    proprietary NVidia and FGLRX packages use.
+
+
+Package: dh-modaliases
+Architecture: all
+Depends: ${perl:Depends},
+ ${misc:Depends}
+Enhances: debhelper
+Description: debhelper extension for scanning kernel module aliases
+ dh_modaliases is useful for packages that ship third-party kernel modules,
+ either in binary form, or as sources (with e. g. DKMS). It extracts the
+ modules' modaliases from either the compile .ko files themselves (for packages
+ which ship them in compiled form, using modinfo), or from a package file
+ debian/packagename.modaliases.
+ .
+ This enables software which is looking for missing driver packages (such as
+ Jockey or the operating system installer) to identify which package(s) will
+ provide a driver for a piece of hardware, identified by its modalias.
+ 
+Package: nvidia-common
+Section: oldlibs
+Priority: extra
+Architecture: i386 amd64 armel armhf
+Depends: ubuntu-drivers-common, ${misc:Depends}
+Description: transitional package for ubuntu-drivers-common
+ This is a transitional package for ubuntu-drivers-common. You can remove it
+ after upgrading.
+
+Package: fglrx-pxpress
+Section: oldlibs
+Priority: extra
+Architecture: i386 amd64
+Depends: ubuntu-drivers-common, ${misc:Depends}
+Description: transitional package for ubuntu-drivers-common
+ This is a transitional package for ubuntu-drivers-common. You can remove it
+ after upgrading.
