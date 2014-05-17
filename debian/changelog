@@ -1,3 +1,9 @@
+ubuntu-drivers-common (1:0.2.91.4linuxmint1) qiana; urgency=medium
+
+  * Added support for MDM
+
+ -- Clement Lefebvre <root@linuxmint.com>  Sat, 17 May 2014 12:46:11 +0100
+
 ubuntu-drivers-common (1:0.2.91.4) trusty; urgency=medium
 
   * Force removal of jockey on upgrades. It has been replaced with
