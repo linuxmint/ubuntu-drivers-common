@@ -1,3 +1,13 @@
+ubuntu-drivers-common (1:0.2.91.4linuxmint2) rosa; urgency=medium
+
+  [ wzhy90 ]
+  * fixes: quirkinfo.py UnicodeDecodeError for utf-8
+
+  [ Clement Lefebvre ]
+  * Broadcom: Recommend STA, but also list B43 firmware installers
+
+ -- Clement Lefebvre <root@linuxmint.com>  Sat, 07 Nov 2015 23:41:07 +0000
+
 ubuntu-drivers-common (1:0.2.91.4linuxmint1) qiana; urgency=medium
 
   * Added support for MDM
