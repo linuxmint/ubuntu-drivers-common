@@ -1,18 +1,102 @@
-ubuntu-drivers-common (1:0.2.91.4linuxmint2) rosa; urgency=medium
+ubuntu-drivers-common (1:0.2.91.11) trusty; urgency=medium
 
-  [ wzhy90 ]
-  * fixes: quirkinfo.py UnicodeDecodeError for utf-8
+  * Backport from utopic version 1:0.2.98.4: debian/tests/system,
+    tests/ubuntu_drivers.py, UbuntuDrivers/detect.py:
+    - Revert the previous changes that made us switch from bcmwl to
+      the open driver, as the latter (in order to be a full replacement)
+      seems to require firmware that we cannot include in the Ubuntu
+      image because of licensing issues (LP: #1481018).
 
-  [ Clement Lefebvre ]
-  * Broadcom: Recommend STA, but also list B43 firmware installers
+ -- Adam Conrad <adconrad@ubuntu.com>  Tue, 04 Aug 2015 11:08:21 -0600
 
- -- Clement Lefebvre <root@linuxmint.com>  Sat, 07 Nov 2015 23:41:07 +0000
+ubuntu-drivers-common (1:0.2.91.10) trusty-proposed; urgency=medium
 
-ubuntu-drivers-common (1:0.2.91.4linuxmint1) qiana; urgency=medium
+  * gpu-manager.c, gpu-manager.py:
+    - Use the amdconfig tool to configure multi-amd PXpress. This
+      fixes a problem where the AMD control panel won't show an
+      option to switch between power saving mode and performance
+      mode on AMD+AMD hybrid systems (LP: #1410801).
+    - The tests now reflect a more relaxed approach so that we
+      do not overwrite configurations that are not supported (such
+      as multiple xscreens set in the xorg.conf).
 
-  * Added support for MDM
+ -- Alberto Milone <alberto.milone@canonical.com>  Fri, 08 May 2015 12:48:37 +0200
 
- -- Clement Lefebvre <root@linuxmint.com>  Sat, 17 May 2014 12:46:11 +0100
+ubuntu-drivers-common (1:0.2.91.9) trusty-proposed; urgency=medium
+
+  * sl-modem plugin: Keep environment for aplay, just ensure it's using the C
+    locale. This avoids staring pulseaudio twice and causing races for
+    attaching devices to pulseaudio. (LP: #1296425)
+
+ -- Martin Pitt <martin.pitt@ubuntu.com>  Mon, 05 Jan 2015 17:27:53 +0100
+
+ubuntu-drivers-common (1:0.2.91.8) trusty-proposed; urgency=medium
+
+  * gpu-manager.c:
+    - Refine checks for blacklisted modules, so that we don't end up
+      catching false positives (LP: #1376966).
+      Thanks to Pär Lindfors for the patch.
+
+ -- Alberto Milone <alberto.milone@canonical.com>  Wed, 10 Dec 2014 18:51:21 +0100
+
+ubuntu-drivers-common (1:0.2.91.7) trusty-proposed; urgency=medium
+
+  * gpu-manager.c, gpu-manager.py:
+    - Add support for testing core alternatives. This will be needed
+      by fglrx.
+    - Fix a regression that caused the gpu-manager to switch to mesa
+      after enabling fglrx on hybrid systems (LP: #1310489). Also
+      add a test case so that we don't regress in the future.
+    - Check that either fglrx or nvidia is set in xorg.conf when
+      xorg.conf is needed.
+    - Check if kernel modules are blacklisted before choosing the
+      driver (LP: #1310489).
+    - Enable only GPUs with open drivers that have connected outputs.
+      Attaching to GPUs that have no connected outputs would result
+      in a black screen.
+    - Allow RandR offloading even without bbswitch (LP: #1349282).
+    - Fall back to mesa when failing to enable prime.
+    - Do not try to enable prime if the nvidia driver is older than
+      331.
+    - Do not abort if the settings for prime cannot be found.
+      Try to create the file before failing.
+
+ -- Alberto Milone <alberto.milone@canonical.com>  Fri, 29 Aug 2014 11:29:55 +0200
+
+ubuntu-drivers-common (1:0.2.91.6) trusty-proposed; urgency=medium
+
+  * UbuntuDrivers/detect.py, debian/tests/system, tests/ubuntu_drivers.py:
+    - Do not autoinstall the broadcom driver. The open driver should be a
+      better solution now (LP: #1306928), as the binary driver prevents
+      a number of systems from using the wireless card.
+    - Autoinstall linux-firmware-nonfree. This will help now that we no
+      longer autoinstall Broadcom's binary driver.
+    - Fix the relevant tests now that linux-firmware-nonfree has replaced
+      bcmwl.
+  * gpu-manager.c, tests/gpu-manager.py:
+    - Ignore CRT displays when using PRIME. This works around systems whose
+      BIOS provides a ghost output (LP: #1296020).
+    - Check that we don't remove xorg.confs on 1st boot (as per the
+      previous SRU).
+    - Try harder when loading bbswitch (LP: #1310023). If loading bbswitch
+      fails try with or without the "skip_optimus_dsm=1" option. Also, make
+      sure that we trim dmi resources or matching will give us false
+      positives.
+    - Switch to intel/SNA for optimus systems (LP: #1326257).
+    - Make sure to unload nvidia-uvm or nvidia won't be
+      unloaded.
+    - Make sure to walk properly the /dev/dri dir. This
+      prevents the program from stopping when, for example
+      /dev/dri/card1 is available while /dev/dri/card0 is
+      not.
+
+ -- Alberto Milone <alberto.milone@canonical.com>  Fri, 06 Jun 2014 11:20:28 +0200
+
+ubuntu-drivers-common (1:0.2.91.5) trusty-proposed; urgency=medium
+
+  * During first boot, don't remove existing xorg.conf. (LP: #1307546)
+
+ -- Mario Limonciello <superm1@ubuntu.com>  Fri, 18 Apr 2014 11:35:27 -0500
 
 ubuntu-drivers-common (1:0.2.91.4) trusty; urgency=medium
 
