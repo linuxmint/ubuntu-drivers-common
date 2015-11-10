@@ -2681,13 +2681,6 @@ static bool enable_prime(const char *prime_settings,
     bool prime_discrete_on = false;
     bool prime_action_on = false;
 
-    /* We only support Lightdm at this time */
-    if (!is_lightdm_default()) {
-        fprintf(log_handle, "Lightdm is not the default display "
-                            "manager. Nothing to do\n");
-        return false;
-    }
-
     /* Check the driver version
      * Note: this won't be available when the discrete GPU
      *       is disabled, so don't error out if we cannot
