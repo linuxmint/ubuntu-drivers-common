@@ -1,3 +1,9 @@
+ubuntu-drivers-common (1:0.4.17linuxmint1) sarah; urgency=medium
+
+  * Sarah
+
+ -- Clement Lefebvre <root@linuxmint.com>  Mon, 02 May 2016 14:22:34 +0100
+
 ubuntu-drivers-common (1:0.4.17) xenial; urgency=medium
 
   * tests/ubuntu_drivers.py: Allow test_system_driver_packages_performance()
