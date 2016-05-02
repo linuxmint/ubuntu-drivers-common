@@ -156,7 +156,14 @@ def packages_for_modalias(apt_cache, modalias):
             for p in bus_map[alias]:
                 pkgs.add(p)
 
-    return [apt_cache[p] for p in pkgs]
+    result = []
+    for p in pkgs:
+        result.append(apt_cache[p])
+        if p == "bcmwl-kernel-source":
+            result.append(apt_cache["firmware-b43-installer"])
+            result.append(apt_cache["firmware-b43legacy-installer"])
+
+    return result
 
 packages_for_modalias.cache_maps = {}
 
@@ -319,6 +326,14 @@ def system_driver_packages(apt_cache=None):
         fglrx_packages.sort(key=functools.cmp_to_key(_cmp_gfx_alternatives))
         recommended = fglrx_packages[-1]
         for p in fglrx_packages:
+            packages[p]['recommended'] = (p == recommended)
+
+    # Add "recommended" flags for broadcom STA
+    broadcom_packages = [p for p in packages if p == 'bcmwl-kernel-source']
+    if broadcom_packages:
+        broadcom_packages.sort(key=functools.cmp_to_key(_cmp_gfx_alternatives))
+        recommended = broadcom_packages[-1]
+        for p in broadcom_packages:
             packages[p]['recommended'] = (p == recommended)
 
     # add available packages which need custom detection code
