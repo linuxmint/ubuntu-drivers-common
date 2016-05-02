@@ -1,26 +1,121 @@
-ubuntu-drivers-common (1:0.2.91.11linuxmint2) rosa; urgency=medium
+ubuntu-drivers-common (1:0.4.17) xenial; urgency=medium
 
-  [ Clement Lefebvre ]
-  * Add MDM support
-  * Broadcom: Recommend STA, but also list B43 firmware installers
+  * tests/ubuntu_drivers.py: Allow test_system_driver_packages_performance()
+    90s on ARM, as 30s is not enough on slow buildds.
 
-  [ wzhy90 ]
-  * fixes: quirkinfo.py UnicodeDecodeError for utf-8
+ -- Martin Pitt <martin.pitt@ubuntu.com>  Tue, 12 Apr 2016 11:03:37 +0200
 
- -- Clement Lefebvre <root@linuxmint.com>  Tue, 10 Nov 2015 15:26:47 +0000
+ubuntu-drivers-common (1:0.4.16) xenial; urgency=medium
 
-ubuntu-drivers-common (1:0.2.91.11) trusty; urgency=medium
+  * debian/tests/system: Drop test_fglrx() as the fglrx driver is gone.
+    Test bcmwl instead.
 
-  * Backport from utopic version 1:0.2.98.4: debian/tests/system,
-    tests/ubuntu_drivers.py, UbuntuDrivers/detect.py:
-    - Revert the previous changes that made us switch from bcmwl to
-      the open driver, as the latter (in order to be a full replacement)
-      seems to require firmware that we cannot include in the Ubuntu
-      image because of licensing issues (LP: #1481018).
+ -- Martin Pitt <martin.pitt@ubuntu.com>  Fri, 04 Mar 2016 11:07:02 +0100
 
- -- Adam Conrad <adconrad@ubuntu.com>  Tue, 04 Aug 2015 11:08:21 -0600
+ubuntu-drivers-common (1:0.4.15) xenial; urgency=medium
 
-ubuntu-drivers-common (1:0.2.91.10) trusty-proposed; urgency=medium
+  * gpu-manager.{c|py}:
+    - Add support for managing EGL alternatives.
+    - Make sure to load and to unload the new nvidia-modeset module for
+      prime.
+  * 71-u-d-c-gpu-detection.rules, u-d-c-print-pci-ids:
+    - Fix fglrx detection.
+
+ -- Alberto Milone <alberto.milone@canonical.com>  Thu, 28 Jan 2016 17:29:27 +0100
+
+ubuntu-drivers-common (1:0.4.14) xenial; urgency=medium
+
+  * gpu-manager.{c|py}:
+    - Rely on udev for card detection. This helps detecting if a module
+      was unloaded or if a card was disabled on a hybrid system.
+      In addition to being more accurate (LP: #1485236), this should also
+      be much faster on boot (LP: #1307069).
+    - Restrict the search for built modules to the dkms directory. This
+      improves performance.
+  * debian/rules, setup.py, 71-u-d-c-gpu-detection.rules,
+    u-d-c-print-pci-ids:
+    - Provide a udev rule to detect cards and modules.
+
+ -- Alberto Milone <alberto.milone@canonical.com>  Wed, 13 Jan 2016 10:35:18 +0100
+
+ubuntu-drivers-common (1:0.4.13) xenial; urgency=medium
+
+  * Depend on liblocale-gettext-perl for autopkgtest, forcing it not to be
+    dropped during Perl transitions (thereby breaking the fglrx test) due to
+    pinning only necessary packages from -proposed.
+
+ -- Colin Watson <cjwatson@ubuntu.com>  Tue, 29 Dec 2015 05:22:18 +0000
+
+ubuntu-drivers-common (1:0.4.12) xenial; urgency=medium
+
+  [ Alberto Milone ]
+  * UbuntuDrivers/detect.py:
+    - Make modalias matching case insensitive (LP: #1500591).
+
+  [ Martin Pitt ]
+  * debian/tests/system: Explicitly require version 1.0 of UMockdev, to avoid
+    a warning on stderr.
+
+ -- Martin Pitt <martin.pitt@ubuntu.com>  Mon, 26 Oct 2015 11:03:09 +0100
+
+ubuntu-drivers-common (1:0.4.11) wily; urgency=medium
+
+  * gpu-manager.c:
+    - Rely on /var/log/syslog to get information about unloaded modules.
+      This should minimise the current slowdown on boot (LP: #1307069).
+    - Switch from intel to modesetting as the default driver on hybrid
+      intel/nvidia systems because of a regression in the intel driver
+      (LP: #1507676).
+
+ -- Alberto Milone <alberto.milone@canonical.com>  Mon, 19 Oct 2015 17:35:12 +0200
+
+ubuntu-drivers-common (1:0.4.10) wily; urgency=medium
+
+  * debian/tests/system: Drop the nvidia package tests; they are now tested
+    through autodep8 on every kernel and dkms change, so we don't have to rely
+    on this hard to maintain autopkgtest any more. Also drop most other driver
+    package tests for the same reason; just keep the "fglrx" test to get a
+    full end-to-end test with "ubuntu-drivers".
+
+ -- Martin Pitt <martin.pitt@ubuntu.com>  Thu, 03 Sep 2015 11:27:33 +0200
+
+ubuntu-drivers-common (1:0.4.9) wily; urgency=medium
+
+  * tests/ubuntu_drivers.py: Reset the apt.Cache() cache between tests, as
+    this is unreliable with tests that keep switching apt's root directory.
+    (LP: #1487223)
+  * Bump Standards-Version to 3.9.6 (no changes necessary).
+
+ -- Martin Pitt <martin.pitt@ubuntu.com>  Thu, 03 Sep 2015 07:47:21 +0200
+
+ubuntu-drivers-common (1:0.4.8) wily; urgency=medium
+
+  [ Alberto Milone ]
+  * share/hybrid/gpu-manager.c, tests/gpu-manager.py:
+    - Use SNA in powersaving mode for pxpress, and keep UXA
+      only for performance mode (where it's required). This
+      fixes a number of HWE issues (e.g. LP: #1472972).
+  * Quirks/quirkreader.py:
+    - Set the encoding when opening the file. This fixes a
+      crash in Wily.
+
+  [ Martin Pitt ]
+  * debian/rules: Ensure that $PATH includes /sbin:/usr/sbin, as the tests
+    require several programs from that (e. g. modinfo, aptd). Fixes FTBFS due
+    to test failures. (LP: #1487223)
+
+ -- Martin Pitt <martin.pitt@ubuntu.com>  Wed, 02 Sep 2015 16:59:42 +0200
+
+ubuntu-drivers-common (1:0.4.7) wily; urgency=medium
+
+  * gpu-manager.c:
+    - Check that we have write access to the log. If writing to
+      the log fails, we show a warning, and use stdout instead.
+      (LP: #1298693)
+
+ -- Alberto Milone <alberto.milone@canonical.com>  Fri, 07 Aug 2015 10:40:23 +0200
+
+ubuntu-drivers-common (1:0.4.6) wily; urgency=medium
 
   * gpu-manager.c, gpu-manager.py:
     - Use the amdconfig tool to configure multi-amd PXpress. This
@@ -31,30 +126,150 @@ ubuntu-drivers-common (1:0.2.91.10) trusty-proposed; urgency=medium
       do not overwrite configurations that are not supported (such
       as multiple xscreens set in the xorg.conf).
 
- -- Alberto Milone <alberto.milone@canonical.com>  Fri, 08 May 2015 12:48:37 +0200
+ -- Alberto Milone <alberto.milone@canonical.com>  Fri, 08 May 2015 16:42:32 +0200
 
-ubuntu-drivers-common (1:0.2.91.9) trusty-proposed; urgency=medium
+ubuntu-drivers-common (1:0.4.5) vivid; urgency=medium
 
-  * sl-modem plugin: Keep environment for aplay, just ensure it's using the C
-    locale. This avoids staring pulseaudio twice and causing races for
-    attaching devices to pulseaudio. (LP: #1296425)
+  * Call dh_systemd_enable after installing gpu-manager.service, so that the
+    unit actually gets enabled. Also quiesce the confusing error messages
+    about nonexisting binary package directories. (LP: #1443364)
 
- -- Martin Pitt <martin.pitt@ubuntu.com>  Mon, 05 Jan 2015 17:27:53 +0100
+ -- Martin Pitt <martin.pitt@ubuntu.com>  Mon, 13 Apr 2015 07:01:15 -0500
 
-ubuntu-drivers-common (1:0.2.91.8) trusty-proposed; urgency=medium
+ubuntu-drivers-common (1:0.4.4) vivid; urgency=medium
+
+  * debian/tests/system: Re-enable fglrx tests and update them for the
+    fglrx-core split.
+
+ -- Martin Pitt <martin.pitt@ubuntu.com>  Fri, 10 Apr 2015 12:47:48 +0200
+
+ubuntu-drivers-common (1:0.4.3) vivid; urgency=medium
+
+  * debian/tests/system: Don't use --auto-remove on purge, to avoid removing
+    our test dependencies.
+  * debian/tests/system: Set noninteractive debconf frontend, to avoid debconf
+    error messages.
+  * debian/tests/system: Mark fglrx tests as expected failures, the current
+    fglrx driver is known to be incompatible with current X.org.
+
+ -- Martin Pitt <martin.pitt@ubuntu.com>  Fri, 10 Apr 2015 11:44:45 +0200
+
+ubuntu-drivers-common (1:0.4.2) vivid; urgency=medium
+
+  * gpu-manager.c:
+    - Do not abort when dealing with sddm. This allows users to get
+      partial support for hybrid graphics when using sddm instead of
+      lightdm.
+
+ -- Alberto Milone <alberto.milone@canonical.com>  Thu, 09 Apr 2015 12:51:23 +0200
+
+ubuntu-drivers-common (1:0.4.1) vivid; urgency=medium
+
+  * debian/tests/system:
+    - Add test for nvidia-346 and change the ids for nvidia-340.
+
+ -- Alberto Milone <alberto.milone@canonical.com>  Thu, 12 Mar 2015 17:47:05 +0100
+
+ubuntu-drivers-common (1:0.4) vivid; urgency=medium
+
+  [ Dimitri John Ledkov ]
+  * Add cpu-microcode detect-plugin. (LP: #1386257)
+
+ -- Martin Pitt <martin.pitt@ubuntu.com>  Thu, 19 Feb 2015 14:52:28 +0100
+
+ubuntu-drivers-common (1:0.3) vivid; urgency=medium
+
+  * debian/tests/system: nvidia-331 is transitional now, so adjust tests to
+    use nvidia-340.
+
+ -- Martin Pitt <martin.pitt@ubuntu.com>  Mon, 16 Feb 2015 10:38:48 +0100
+
+ubuntu-drivers-common (1:0.2.98.9) vivid; urgency=medium
+
+  * gpu-manager.c:
+    - Ignore pci passthroughs (LP: #1397124).
+
+ -- Alberto Milone <alberto.milone@canonical.com>  Mon, 08 Dec 2014 10:56:17 +0100
+
+ubuntu-drivers-common (1:0.2.98.8) vivid; urgency=medium
+
+  * gpu-manager.service: Log into /var/log/gpu-manager.log so that we can pick
+    this up from apport.
+
+ -- Martin Pitt <martin.pitt@ubuntu.com>  Wed, 03 Dec 2014 15:28:24 +0100
+
+ubuntu-drivers-common (1:0.2.98.7) vivid; urgency=medium
+
+  * Only install systemd unit on architectures where gpu-manager gets built.
+
+ -- Martin Pitt <martin.pitt@ubuntu.com>  Wed, 03 Dec 2014 14:59:47 +0100
+
+ubuntu-drivers-common (1:0.2.98.6) vivid; urgency=medium
+
+  * setup.py: Drop unnecessary glob().
+  * tests/ubuntu_drivers.py: Set SYSTEMD_LOG_LEVEL to avoid failing on
+    unexpected udevadm debug spew if the kernel gets booted with "debug".
+    Fixes FTBFS on our arm64 builders.
+  * Add systemd unit for gpu-manager.
+
+ -- Martin Pitt <martin.pitt@ubuntu.com>  Wed, 03 Dec 2014 13:36:11 +0100
+
+ubuntu-drivers-common (1:0.2.98.5) vivid; urgency=medium
 
   * gpu-manager.c:
     - Refine checks for blacklisted modules, so that we don't end up
-      catching false positives (LP: #1376966).
+      catching false positives (LP: 1376966).
       Thanks to Pär Lindfors for the patch.
 
- -- Alberto Milone <alberto.milone@canonical.com>  Wed, 10 Dec 2014 18:51:21 +0100
+ -- Alberto Milone <alberto.milone@canonical.com>  Thu, 30 Oct 2014 11:36:55 +0100
 
-ubuntu-drivers-common (1:0.2.91.7) trusty-proposed; urgency=medium
+ubuntu-drivers-common (1:0.2.98.4) utopic; urgency=medium
+
+  * debian/tests/system, tests/ubuntu_drivers.py,
+    UbuntuDrivers/detect.py:
+    - Revert the previous changes that made us switch from bcmwl to
+      the open driver, as the latter (in order to be a full replacement)
+      seems to require firmware that we cannot include in the Ubuntu
+      image because of licensing issues (LP: #1374126).
+
+ -- Alberto Milone <alberto.milone@canonical.com>  Thu, 09 Oct 2014 16:42:53 +0200
+
+ubuntu-drivers-common (1:0.2.98.3) utopic; urgency=medium
+
+  * gpu-manager.c:
+    - Add support for "gpumanager_uxa" and "gpumanager_modesetting"
+      boot parameters, so that there is an option to force NVIDIA
+      Optimus systems (that don't work well with Intel/SNA) to use
+      either Intel/UXA or modesetting (LP: #1365695).
+
+ -- Alberto Milone <alberto.milone@canonical.com>  Thu, 18 Sep 2014 12:15:34 +0200
+
+ubuntu-drivers-common (1:0.2.98.2) utopic; urgency=medium
+
+  * gpu-manager.c, gpu-manager.py:
+    - Be more tolerant with xorg.confs. This fixes the multi AMD
+      GPU use case where aticonfig insists on not setting the
+      PCI domain in the xorg.conf (LP: #1310489). Also add a test
+      with one of the xorg.confs from the bug report so that we
+      do not regress in the future.
+
+ -- Alberto Milone <alberto.milone@canonical.com>  Sun, 07 Sep 2014 09:28:20 +0200
+
+ubuntu-drivers-common (1:0.2.98.1) utopic; urgency=medium
+
+  * gpu-manager.c, gpu-manager.py:
+    - Avoid false positives with blacklisted modules (LP: #1363675).
+    - Add regression test for the bug.
+
+ -- Alberto Milone <alberto.milone@canonical.com>  Mon, 01 Sep 2014 18:01:09 +0200
+
+ubuntu-drivers-common (1:0.2.98) utopic; urgency=medium
 
   * gpu-manager.c, gpu-manager.py:
     - Add support for testing core alternatives. This will be needed
       by fglrx.
+    - Add the --backup-log parameter. This is only used for debugging
+      and disabled by default.
     - Fix a regression that caused the gpu-manager to switch to mesa
       after enabling fglrx on hybrid systems (LP: #1310489). Also
       add a test case so that we don't regress in the future.
@@ -70,30 +285,30 @@ ubuntu-drivers-common (1:0.2.91.7) trusty-proposed; urgency=medium
     - Do not try to enable prime if the nvidia driver is older than
       331.
     - Do not abort if the settings for prime cannot be found.
-      Try to create the file before failing.
+      Try creating the file before failing.
+    - Avoid false positives of unloaded modules.
+    - Use the cleanup attribute.
+    - Always use snprintf instead of sprintf.
 
- -- Alberto Milone <alberto.milone@canonical.com>  Fri, 29 Aug 2014 11:29:55 +0200
+ -- Alberto Milone <alberto.milone@canonical.com>  Wed, 27 Aug 2014 10:39:17 +0200
 
-ubuntu-drivers-common (1:0.2.91.6) trusty-proposed; urgency=medium
+ubuntu-drivers-common (1:0.2.97) utopic; urgency=medium
 
-  * UbuntuDrivers/detect.py, debian/tests/system, tests/ubuntu_drivers.py:
-    - Do not autoinstall the broadcom driver. The open driver should be a
-      better solution now (LP: #1306928), as the binary driver prevents
-      a number of systems from using the wireless card.
-    - Autoinstall linux-firmware-nonfree. This will help now that we no
-      longer autoinstall Broadcom's binary driver.
-    - Fix the relevant tests now that linux-firmware-nonfree has replaced
-      bcmwl.
-  * gpu-manager.c, tests/gpu-manager.py:
-    - Ignore CRT displays when using PRIME. This works around systems whose
-      BIOS provides a ghost output (LP: #1296020).
-    - Check that we don't remove xorg.confs on 1st boot (as per the
-      previous SRU).
-    - Try harder when loading bbswitch (LP: #1310023). If loading bbswitch
-      fails try with or without the "skip_optimus_dsm=1" option. Also, make
-      sure that we trim dmi resources or matching will give us false
-      positives.
-    - Switch to intel/SNA for optimus systems (LP: #1326257).
+  * tests/testarchive.py: Organize debs in pool/ structure, for better
+    reusability.
+  * tests/ubuntu_drivers.py: Drop expected failures, they've succeeded for a
+    long time. This needs to be fixed properly if there's a bug.
+  * sl-modem plugin: Keep environment for aplay, just ensure it's using the C
+    locale. (LP: #1296425)
+  * Disable linux-firmware-nonfree autopkgtest for now. bcma does not declare
+    any firmware dependencies and linux-firmware-nonfree does not declare
+    modaliases, so it either just works now, or the driver needs fixing first.
+
+ -- Martin Pitt <martin.pitt@ubuntu.com>  Mon, 18 Aug 2014 10:13:11 +0200
+
+ubuntu-drivers-common (1:0.2.96.1) utopic; urgency=medium
+
+  * gpu-manager.c:
     - Make sure to unload nvidia-uvm or nvidia won't be
       unloaded.
     - Make sure to walk properly the /dev/dri dir. This
@@ -101,13 +316,79 @@ ubuntu-drivers-common (1:0.2.91.6) trusty-proposed; urgency=medium
       /dev/dri/card1 is available while /dev/dri/card0 is
       not.
 
- -- Alberto Milone <alberto.milone@canonical.com>  Fri, 06 Jun 2014 11:20:28 +0200
+ -- Alberto Milone <alberto.milone@canonical.com>  Wed, 11 Jun 2014 17:29:38 +0200
 
-ubuntu-drivers-common (1:0.2.91.5) trusty-proposed; urgency=medium
+ubuntu-drivers-common (1:0.2.96) utopic; urgency=medium
 
-  * During first boot, don't remove existing xorg.conf. (LP: #1307546)
+  * gpu-manager.c:
+    - Try harder when loading bbswitch (LP: #1310023).
+      If loading bbswitch fails try with or without the
+      "skip_optimus_dsm=1" option.
+    - Switch to intel/SNA for optimus systems (LP: #1326257).
 
- -- Mario Limonciello <superm1@ubuntu.com>  Fri, 18 Apr 2014 11:35:27 -0500
+ -- Alberto Milone <alberto.milone@canonical.com>  Wed, 04 Jun 2014 15:59:24 +0200
+
+ubuntu-drivers-common (1:0.2.95) utopic; urgency=medium
+
+  [ Tim Lunn ]
+  * gpu-manager.c, gpu-manager.conf:
+    - Use the gpu-manager with GDM too now that support for
+      it has landed in Utopic (LP: #1262068).
+
+ -- Alberto Milone <alberto.milone@canonical.com>  Fri, 30 May 2014 14:09:31 +0200
+
+ubuntu-drivers-common (1:0.2.94) utopic; urgency=medium
+
+  * gpu-manager.c, tests/gpu-manager.py:
+    - Trim dmi resources or matching will give false positives.
+      This should fix LP: #1310516 for good.
+    - Re-enable checking alternatives for pxpress.
+
+ -- Alberto Milone <alberto.milone@canonical.com>  Fri, 16 May 2014 13:28:31 +0200
+
+ubuntu-drivers-common (1:0.2.93) utopic; urgency=medium
+
+  * gpu-manager.c, tests/gpu-manager.py:
+    - Add support for matching dmi product name (LP: #1310516).
+
+ -- Alberto Milone <alberto.milone@canonical.com>  Mon, 12 May 2014 15:50:11 +0200
+
+ubuntu-drivers-common (1:0.2.92.2) utopic; urgency=medium
+
+  * gpu-manager.c:
+    - Revert switch to the intel driver from modesetting until
+      some issues are fixed.
+
+ -- Alberto Milone <alberto.milone@canonical.com>  Mon, 28 Apr 2014 18:37:02 +0200
+
+ubuntu-drivers-common (1:0.2.92.1) utopic; urgency=medium
+
+  * debian/tests/system, tests/ubuntu_drivers.py:
+    - Fix the relevant tests now that linux-firmware-nonfree
+      has replaced bcmwl.
+
+ -- Alberto Milone <alberto.milone@canonical.com>  Mon, 28 Apr 2014 18:03:45 +0200
+
+ubuntu-drivers-common (1:0.2.92) utopic; urgency=medium
+
+  [ Alberto Milone ]
+  * gpu-manager.c:
+    - Ignore CRT displays when using PRIME. This works around
+      systems whose BIOS provides a ghost output (LP: #1296020).
+    - Switch from modesetting to intel for PRIME.
+  * tests/gpu-manager.py:
+    - Check that we don't remove xorg.confs on 1st boot.
+  * UbuntuDrivers/detect.py:
+    - Do not autoinstall the broadcom driver. The open driver
+      should be a better solution now (LP: #1306928).
+    - Autoinstall linux-firmware-nonfree. This will help now
+      that we no longer autoinstall Broadcom's binary driver.
+
+  [ Mario Limonciello ]
+  * gpu-manager.c:
+    - During first boot, don't remove existing xorg.conf (LP: #1307546).
+
+ -- Alberto Milone <alberto.milone@canonical.com>  Mon, 28 Apr 2014 10:15:11 +0200
 
 ubuntu-drivers-common (1:0.2.91.4) trusty; urgency=medium
 

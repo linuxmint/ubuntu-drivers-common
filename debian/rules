@@ -15,14 +15,23 @@ override_dh_auto_install:
 override_dh_auto_test:
 ifeq (, $(findstring nocheck, $(DEB_BUILD_OPTIONS)))
 	$(call py3sdo, setup.py egg_info)
-	#set -e; $(foreach py, $(shell py3versions -r), PYTHONPATH=. $(py) -B tests/run || [ "$(DEB_HOST_ARCH)" = powerpc ];)
+	set -e; $(foreach py, $(shell py3versions -r), PATH=$$PATH:/sbin:/usr/sbin PYTHONPATH=. $(py) -B tests/run || [ "$(DEB_HOST_ARCH)" = powerpc ];)
 endif
 
 override_dh_auto_clean:
 	$(call py3sdo, setup.py clean)
 
 override_dh_install:
-	dh_install --fail-missing
+	dh_install --fail-missing -Xlib/systemd -Xsbin -Xlib/udev
+
+	# on architectures where we build gpu-manager, install the systemd unit,
+	# the udev rule, and the script for gpu detection
+	if [ -d debian/tmp/lib/systemd ]; then \
+		dh_install -p ubuntu-drivers-common lib/systemd; \
+		dh_systemd_enable -p ubuntu-drivers-common; \
+		dh_install -p ubuntu-drivers-common lib/udev/rules.d; \
+		dh_install -p ubuntu-drivers-common sbin; \
+	fi
 
 	# build dh_modaliases manpage
 	mkdir -p debian/dh-modaliases/usr/share/man/man1

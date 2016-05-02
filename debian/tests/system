@@ -5,6 +5,8 @@ import os.path
 import unittest
 import subprocess
 
+import gi
+gi.require_version('UMockdev', '1.0')
 from gi.repository import UMockdev
 
 srcdir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -52,7 +54,7 @@ class TestSystem(unittest.TestCase):
         self.assertTrue('=== matching driver packages ===' in o, o)
 
 class TestUbuntuDrivers(unittest.TestCase):
-    '''Check that we can detect and install the most common drivers'''
+    '''Check that we can detect and install an actual driver packge'''
 
     @classmethod
     def setUpClass(cls):
@@ -71,57 +73,13 @@ class TestUbuntuDrivers(unittest.TestCase):
         self.testbed = UMockdev.Testbed.new()
 
     def test_bcmwl(self):
-        '''bcmwl-kernel-source'''
+        '''bcmwl'''
 
         self.do_test_driver('pci:v000014E4d00004353sv00sd01bc02sc80i00',
-                'bcmwl-kernel-source', 'wl', auto_install=True, allow_errors=True)
-
-    def test_nvidia_304(self):
-        '''nvidia-304'''
-
-        # we have two matches here, only install nvidia-current, not -updates
-        self.do_test_driver('pci:v000010DEd000010C3sv00sd01bc03sc00i00',
-                'nvidia-304', 'nvidia_304', auto_install=False)
-
-    def test_nvidia_304_updates(self):
-        '''nvidia-304-updates'''
-
-        self.do_test_driver('pci:v000010DEd000010C3sv00sd01bc03sc00i00',
-                'nvidia-304-updates', 'nvidia_304_updates', auto_install=False)
-
-    def test_nvidia_331(self):
-        '''nvidia-331'''
-
-        # we have two matches here, only install nvidia-current, not -updates
-        self.do_test_driver('pci:v000010DEd000010C3sv00sd01bc03sc00i00',
-                'nvidia-331', 'nvidia_331', auto_install=False)
-
-    def test_nvidia_331_updates(self):
-        '''nvidia-331-updates'''
-
-        self.do_test_driver('pci:v000010DEd000010C3sv00sd01bc03sc00i00',
-                'nvidia-331-updates', 'nvidia_331_updates', auto_install=False)
-
-    def test_fglrx(self):
-        '''fglrx'''
-
-        # we have two matches here, only install fglrx, not -updates
-        self.do_test_driver('pci:v00001002d0000990Fsv00sd00bc03sc00i00',
-                'fglrx', 'fglrx', auto_install=False)
-
-    def test_fglrx_updates(self):
-        '''fglrx-updates'''
-
-        self.do_test_driver('pci:v00001002d0000990Fsv00sd00bc03sc00i00',
-                'fglrx-updates', 'fglrx_updates', auto_install=False)
-
-    def test_virtualbox(self):
-        '''virtualbox-dkms'''
-
-        self.do_test_driver(None, 'virtualbox-dkms', 'vboxdrv', auto_install=False)
+                'bcmwl-kernel-source', 'wl', auto_install=False)
 
     def do_test_driver(self, alias, package, module, auto_install=True,
-                       allow_errors=False):
+                       allow_errors=False, extra_purge=[]):
         if alias:
             self.testbed.add_device('pci', 'mydev', None, ['modalias', alias], [])
 
@@ -153,7 +111,7 @@ class TestUbuntuDrivers(unittest.TestCase):
                 self.assertTrue('filename:' in o)
         finally:
             # clean up
-            program_out(['apt-get', 'purge', '--auto-remove', '-y', package])
+            program_out(['apt-get', 'purge', '-y', package] + extra_purge)
 
             if module:
                 (c, o, e) = program_out(['modinfo', module])
@@ -165,6 +123,9 @@ class TestUbuntuDrivers(unittest.TestCase):
 # run ourselves through umockdev-wrapper
 if 'umockdev' not in os.environ.get('LD_PRELOAD', ''):
     os.execvp('umockdev-wrapper', ['umockdev-wrapper'] + sys.argv)
+
+# avoid debconf errors
+os.environ['DEBIAN_FRONTEND'] = 'noninteractive'
 
 # for autopkgtest we must write to stdout, not stderr, and have an appropriate
 # exit code

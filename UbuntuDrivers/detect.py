@@ -152,18 +152,11 @@ def packages_for_modalias(apt_cache, modalias):
 
     bus_map = cache_map.get(modalias.split(':', 1)[0], {})
     for alias in bus_map:
-        if fnmatch.fnmatch(modalias, alias):
+        if fnmatch.fnmatch(modalias.lower(), alias.lower()):
             for p in bus_map[alias]:
                 pkgs.add(p)
 
-    result = []
-    for p in pkgs:
-        result.append(apt_cache[p])
-        if p == "bcmwl-kernel-source":
-            result.append(apt_cache["firmware-b43-installer"])
-            result.append(apt_cache["firmware-b43legacy-installer"])
-
-    return result
+    return [apt_cache[p] for p in pkgs]
 
 packages_for_modalias.cache_maps = {}
 
@@ -328,10 +321,6 @@ def system_driver_packages(apt_cache=None):
         for p in fglrx_packages:
             packages[p]['recommended'] = (p == recommended)
 
-    # Add "recommended" flags for the Broadcom STA driver
-    if 'bcmwl-kernel-source' in packages:
-        packages['bcmwl-kernel-source']['recommended'] = True
-
     # add available packages which need custom detection code
     for plugin, pkgs in detect_plugin_packages(apt_cache).items():
         for p in pkgs:
@@ -437,7 +426,7 @@ def auto_install_filter(packages):
     KMS).
     '''
     # any package which matches any of those globs will be accepted
-    whitelist = ['bcmwl*', 'pvr-omap*', 'virtualbox-guest*', 'nvidia-*']
+    whitelist = ['bcmwl*', 'pvr-omap*', 'virtualbox-guest*', 'nvidia-*', '*-microcode']
     allow = []
     for pattern in whitelist:
         allow.extend(fnmatch.filter(packages, pattern))

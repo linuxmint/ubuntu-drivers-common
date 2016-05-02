@@ -313,6 +313,10 @@ class DetectTest(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.plugin_dir)
 
+        # most test cases switch the apt root, so the apt.Cache() cache becomes
+        # unreliable; reset it
+        UbuntuDrivers.detect.packages_for_modalias.cache_maps = {}
+
     @unittest.skipUnless(os.path.isdir('/sys/devices'), 'no /sys dir on this system')
     def test_system_modaliases_system(self):
         '''system_modaliases() for current system'''
@@ -345,9 +349,11 @@ class DetectTest(unittest.TestCase):
 
         sec = (stop.ru_utime + stop.ru_stime) - (start.ru_utime + start.ru_stime)
         sys.stderr.write('[%.2f s] ' % sec)
-        self.assertLess(sec, 30.0)
+        if 'arm' in os.uname().machine:
+            self.assertLess(sec, 90.0)
+        else:
+            self.assertLess(sec, 30.0)
 
-    @unittest.expectedFailure
     def test_system_driver_packages_chroot(self):
         '''system_driver_packages() for test package repository'''
 
@@ -743,6 +749,10 @@ APT::Get::AllowUnauthenticated "true";
         klass.plugin_dir = os.path.join(klass.chroot.path, 'detect')
         os.environ['UBUNTU_DRIVERS_DETECT_DIR'] = klass.plugin_dir
 
+        # avoid failures due to unexpected udevadm debug messages if kernel is
+        # booted with "debug"
+        os.environ['SYSTEMD_LOG_LEVEL'] = 'warning'
+
     @classmethod
     def tearDownClass(klass):
         klass.chroot.remove()
@@ -790,7 +800,6 @@ APT::Get::AllowUnauthenticated "true";
                      'nvidia-current', 'special', 'picky']))
         self.assertEqual(ud.returncode, 0)
 
-    @unittest.expectedFailure
     def test_list_system(self):
         '''ubuntu-drivers list for fake sysfs and system apt'''
 
@@ -846,7 +855,6 @@ APT::Get::AllowUnauthenticated "true";
         self.assertTrue('special - third-party free' in out, out)
         self.assertEqual(ud.returncode, 0)
 
-    @unittest.expectedFailure
     def test_devices_system(self):
         '''ubuntu-drivers devices for fake sysfs and system apt'''
 
@@ -900,7 +908,6 @@ APT::Get::AllowUnauthenticated "true";
         with open(listfile) as f:
             self.assertEqual(f.read(), 'bcmwl-kernel-source\n')
 
-    @unittest.expectedFailure
     def test_auto_install_system(self):
         '''ubuntu-drivers autoinstall for fake sysfs and system apt'''
 
