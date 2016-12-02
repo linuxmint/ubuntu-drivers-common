@@ -1,3 +1,15 @@
+ubuntu-drivers-common (1:0.2.91.12linuxmint1) rosa; urgency=medium
+
+  [ Clement Lefebvre ]
+  * Rebase on 0.2.91.12
+  * Add MDM support
+  * Broadcom: Recommend STA, but also list B43 firmware installers
+
+  [ wzhy90 ]
+  * fixes: quirkinfo.py UnicodeDecodeError for utf-8
+
+ -- Clement Lefebvre <root@linuxmint.com>  Fri, 02 Dec 2016 11:04:13 +0000
+
 ubuntu-drivers-common (1:0.2.91.12) trusty-proposed; urgency=medium
 
   * Backport from yakkety version 1:0.4.22: gpu-manager.c, gpu-manager.py:
