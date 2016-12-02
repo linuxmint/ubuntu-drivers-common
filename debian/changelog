@@ -1,13 +1,12 @@
-ubuntu-drivers-common (1:0.2.91.11linuxmint2) rosa; urgency=medium
+ubuntu-drivers-common (1:0.2.91.12) trusty-proposed; urgency=medium
 
-  [ Clement Lefebvre ]
-  * Add MDM support
-  * Broadcom: Recommend STA, but also list B43 firmware installers
+  * Backport from yakkety version 1:0.4.22: gpu-manager.c, gpu-manager.py:
+    - Add all the necessary changes for nvidia and hybrid graphics to
+      handle the new kernel modules and the EGL alternatives (LP: #1642662).
+      Also detect the new amdgpu driver.
+    - Leave gdm support disabled, since gdm is still missing a patch.
 
-  [ wzhy90 ]
-  * fixes: quirkinfo.py UnicodeDecodeError for utf-8
-
- -- Clement Lefebvre <root@linuxmint.com>  Tue, 10 Nov 2015 15:26:47 +0000
+ -- Alberto Milone <alberto.milone@canonical.com>  Mon, 21 Nov 2016 12:04:49 +0100
 
 ubuntu-drivers-common (1:0.2.91.11) trusty; urgency=medium
 

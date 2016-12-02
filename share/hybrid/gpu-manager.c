@@ -55,6 +55,9 @@
 #include <getopt.h>
 #include <time.h>
 #include <fcntl.h>
+#include <errno.h>
+#include <linux/limits.h>
+#include <sys/utsname.h>
 #include "xf86drm.h"
 #include "xf86drmMode.h"
 
@@ -84,6 +87,12 @@ static inline void pclosep(FILE **);
 
 #define MAX_CARDS_N 10
 
+typedef enum {
+    SNA,
+    MODESETTING,
+    UXA
+} prime_intel_drv;
+
 static char *log_file = NULL;
 static FILE *log_handle = NULL;
 static char *last_boot_file = NULL;
@@ -93,8 +102,9 @@ static int dry_run = 0;
 static int fake_lightdm = 0;
 static char *fake_modules_path = NULL;
 static char *fake_alternatives_path = NULL;
+static char *fake_egl_alternatives_path = NULL;
 static char *fake_core_alternatives_path = NULL;
-static char *fake_dmesg_path = NULL;
+static char *gpu_detection_path = NULL;
 static char *prime_settings = NULL;
 static char *bbswitch_path = NULL;
 static char *bbswitch_quirks_path = NULL;
@@ -104,7 +114,7 @@ static char *nvidia_driver_version_path = NULL;
 static char *modprobe_d_path = NULL;
 static char *main_arch_path = NULL;
 static char *other_arch_path = NULL;
-
+static prime_intel_drv prime_intel_driver;
 
 static struct pci_slot_match match = {
     PCI_MATCH_ANY, PCI_MATCH_ANY, PCI_MATCH_ANY, PCI_MATCH_ANY, 0
@@ -128,28 +138,38 @@ struct alternatives {
      *  detect the installer
      */
     int nvidia_available;
+    int nvidia_egl_available;
     int fglrx_available;
     int fglrx_core_available;
     int mesa_available;
+    int mesa_egl_available;
     int pxpress_available;
     int prime_available;
+    int prime_egl_available;
 
     /* The ones that may be enabled */
     int nvidia_enabled;
+    int nvidia_egl_enabled;
     int fglrx_enabled;
     int fglrx_core_enabled;
     int mesa_enabled;
+    int mesa_egl_enabled;
     int pxpress_enabled;
     int prime_enabled;
+    int prime_egl_enabled;
 
     char *current;
     char *current_core;
+    char *current_egl;
 };
 
 static bool is_file(char *file);
 static bool is_dir(char *directory);
 static bool is_dir_empty(char *directory);
 static bool is_link(char *file);
+static bool is_pxpress_dgpu_disabled();
+static void enable_pxpress_amd_settings(bool discrete_enabled);
+static bool is_module_loaded(const char *module);
 
 static inline void freep(void *p) {
     free(*(void**) p);
@@ -580,6 +600,67 @@ static void get_architecture_paths(char **main_arch_path,
 }
 
 
+/* Get the master link of an alternative */
+static char* get_alternative_link(const char *alternative_pattern, const char *fake_path,
+                                  char *arch_path, char *pattern) {
+    char *alternative = NULL;
+    char command[300];
+    _cleanup_fclose_ FILE *file = NULL;
+
+    if (dry_run && fake_path) {
+        file = fopen(fake_path, "r");
+        if (file == NULL) {
+            fprintf(stderr, "Warning: I couldn't open %s (fake alternatives path) for reading.\n",
+                    fake_path);
+            return NULL;
+        }
+        while (fgets(command, sizeof(command), file)) {
+            /* Make sure we don't catch prime by mistake when
+             * looking for nvidia
+             */
+            if (strcmp(pattern, "nvidia") == 0) {
+                if (strstr(command, pattern) != NULL) {
+                    alternative = strdup(command);
+                    break;
+                }
+            }
+            else {
+                if (strstr(command, pattern) != NULL) {
+                alternative = strdup(command);
+                break;
+                }
+            }
+        }
+    }
+    else {
+        snprintf(command, sizeof(command),
+                 "update-alternatives --list %s_%s_conf",
+                 arch_path, alternative_pattern);
+
+        /* Make sure we don't catch prime by mistake when
+         * looking for nvidia
+         */
+        if (strcmp(pattern, "nvidia") == 0)
+            alternative = get_output(command, pattern, "prime");
+        else
+            alternative = get_output(command, pattern, NULL);
+    }
+
+    return alternative;
+}
+
+
+/* Get the master link of a GL alternative */
+static char* get_gl_alternative_link(char *arch_path, char *pattern) {
+    return get_alternative_link("gl", fake_alternatives_path, arch_path, pattern);
+}
+
+/* Get the master link of an EGL alternative */
+static char* get_egl_alternative_link(char *arch_path, char *pattern) {
+    return get_alternative_link("egl", fake_egl_alternatives_path, arch_path, pattern);
+}
+
+#if 0
 /* Get the master link of a GL alternative */
 static char* get_gl_alternative_link(char *arch_path, char *pattern) {
     char *alternative = NULL;
@@ -627,7 +708,7 @@ static char* get_gl_alternative_link(char *arch_path, char *pattern) {
 
     return alternative;
 }
-
+#endif
 
 /* Get the master link of a core alternative */
 static char* get_core_alternative_link(char *arch_path, char *pattern) {
@@ -679,33 +760,19 @@ static char* get_core_alternative_link(char *arch_path, char *pattern) {
 }
 
 
-/* Look for unloaded modules in dmesg */
+/* Look for unloaded modules */
 static bool has_unloaded_module(char *module) {
-    int status = 0;
-    char command[100];
+    char path[PATH_MAX];
 
-    if (dry_run && fake_dmesg_path) {
-        /* Make sure the file exists and is not empty */
-        if (!exists_not_empty(fake_dmesg_path)) {
-            return false;
-        }
+    snprintf(path, sizeof(path), "%s/u-d-c-%s-was-loaded",
+             gpu_detection_path, module);
 
-        snprintf(command, sizeof(command), "grep -q \"%s: module\" %s",
-                 module, fake_dmesg_path);
-        status = system(command);
-        fprintf(log_handle, "grep fake dmesg status %d\n", status);
-    }
-    else {
-        snprintf(command, sizeof(command), "dmesg | grep -q \"%s: module\"",
-                 module);
-        status = system(command);
-        fprintf(log_handle, "grep dmesg status %d\n", status);
+    if (is_file(path) && !is_module_loaded(module)) {
+        fprintf(log_handle, "%s was unloaded\n", module);
+        return true;
     }
 
-    fprintf(log_handle, "dmesg status %d == 0? %s\n", status,
-            (status == 0) ? "Yes" : "No");
-
-    return (status == 0);
+    return false;
 }
 
 
@@ -747,47 +814,75 @@ static bool is_gdm_default() {
             "gdm"));
 }
 
+/* Check if sddm is the default login manager */
+static bool is_sddm_default() {
 
-static void detect_available_alternatives(struct alternatives *info, char *pattern) {
-    if (strstr(pattern, "mesa")) {
-        info->mesa_available = 1;
-    }
-    else if (strstr(pattern, "fglrx")) {
-        info->fglrx_available = 1;
-    }
-    else if (strstr(pattern, "pxpress")) {
-        info->pxpress_available = 1;
-    }
-    else if (strstr(pattern, "nvidia")) {
-        if (strstr(pattern, "prime") != NULL) {
-            info->prime_available = 1;
-        }
-        else {
-            info->nvidia_available = 1;
-        }
-    }
+    return (find_string_in_file("/etc/X11/default-display-manager",
+            "sddm"));
 }
 
 
-static void detect_available_core_alternatives(struct alternatives *info, char *pattern) {
-    /* Currently only fglrx has a core alternative */
-    if (strstr(pattern, "fglrx"))
-        info->fglrx_core_available = 1;
+static void detect_available_alternatives(struct alternatives *info, char *pattern) {
+    /* EGL alternatives */
+    if (strstr(pattern, "egl")) {
+        if (strstr(pattern, "mesa")) {
+            info->mesa_egl_available = 1;
+        }
+        else if (strstr(pattern, "nvidia")) {
+            if (strstr(pattern, "prime")) {
+                info->prime_egl_available = 1;
+            }
+            else {
+                info->nvidia_egl_available = 1;
+            }
+        }
+    }
+    else {
+        if (strstr(pattern, "mesa")) {
+            info->mesa_available = 1;
+        }
+        else if (strstr(pattern, "fglrx")) {
+            if (strstr(pattern, "core"))
+                info->fglrx_core_available = 1;
+            else
+                info->fglrx_available = 1;
+        }
+        else if (strstr(pattern, "pxpress")) {
+            info->pxpress_available = 1;
+        }
+        else if (strstr(pattern, "nvidia")) {
+            if (strstr(pattern, "prime")) {
+                info->prime_available = 1;
+            }
+            else {
+                info->nvidia_available = 1;
+            }
+        }
+    }
 }
 
 
 static void detect_enabled_alternatives(struct alternatives *info) {
-    if (strstr(info->current, "mesa") != NULL) {
+    if (!info) {
+        fprintf(log_handle, "Warning: invalid alternative struct\n");
+        return;
+    }
+    if (!info->current) {
+        fprintf(log_handle, "Warning: invalid current alternative\n");
+        return;
+    }
+
+    if (strstr(info->current, "mesa")) {
         info->mesa_enabled = 1;
     }
-    else if (strstr(info->current, "fglrx") != NULL) {
+    else if (strstr(info->current, "fglrx")) {
         info->fglrx_enabled = 1;
     }
-    else if (strstr(info->current, "pxpress") != NULL) {
+    else if (strstr(info->current, "pxpress")) {
         info->pxpress_enabled = 1;
     }
-    else if (strstr(info->current, "nvidia") != NULL) {
-        if (strstr(info->current, "prime") != NULL) {
+    else if (strstr(info->current, "nvidia")) {
+        if (strstr(info->current, "prime")) {
             info->prime_enabled = 1;
         }
         else {
@@ -798,14 +893,41 @@ static void detect_enabled_alternatives(struct alternatives *info) {
 
 
 static void detect_enabled_core_alternatives(struct alternatives *info) {
+    if (!info->current_core) {
+        fprintf(log_handle, "Warning: invalid current core alternative\n");
+        return;
+    }
+
     /* Currently only fglrx has a core alternative */
-    if (info->current_core && strstr(info->current_core, "fglrx") != NULL)
+    if (istrstr(info->current_core, "fglrx"))
         info->fglrx_core_enabled = 1;
 }
 
 
-static bool get_gl_alternatives(struct alternatives *info, const char *master_link) {
+static void detect_enabled_egl_alternatives(struct alternatives *info) {
+    if (!info->current) {
+        fprintf(log_handle, "Warning: invalid current egl alternative\n");
+        return;
+    }
+
+    if (strstr(info->current_egl, "mesa")) {
+        info->mesa_egl_enabled = 1;
+    }
+    else if (strstr(info->current_egl, "nvidia")) {
+        if (strstr(info->current_egl, "prime")) {
+            info->prime_egl_enabled = 1;
+        }
+        else {
+            info->nvidia_egl_enabled = 1;
+        }
+    }
+}
+
+
+static bool get_alternatives(const char *pattern, const char * path, void (*fcn)(struct alternatives*),
+                             struct alternatives *info, const char *master_link) {
     int len;
+    char **current_target;
     char command[200];
     char buffer[1035];
     _cleanup_pclose_ FILE *pfile = NULL;
@@ -813,20 +935,33 @@ static bool get_gl_alternatives(struct alternatives *info, const char *master_li
     char *other = NULL;
     const char ch = '/';
 
+
+    if (strcmp(pattern, "egl") == 0)
+        current_target =  &info->current_egl;
+    else if (strcmp(pattern, "gl") == 0)
+        current_target =  &info->current;
+    else if (strcmp(pattern, "gfxcore") == 0)
+        current_target =  &info->current_core;
+    else {
+        fprintf(log_handle, "Error: can't recognise pattern: %s\n", pattern);
+        return false;
+    }
+
     /* Test */
-    if (fake_alternatives_path) {
-        pfile = fopen(fake_alternatives_path, "r");
+    if (path) {
+        pfile = fopen(path, "r");
         if (pfile == NULL) {
-            fprintf(log_handle, "Warning: can't open fake_alternatives_path %s\n", fake_alternatives_path);
+            fprintf(log_handle, "Warning: can't open alternatives path: %s\n", path);
             return false;
         }
         /* Set the enabled alternatives in the struct */
-        detect_enabled_alternatives(info);
+        /* detect_enabled_alternatives(info); */
+        (*fcn)(info);
     }
     else {
         snprintf(command, sizeof(command),
-                 "/usr/bin/update-alternatives --query %s_gl_conf",
-                 master_link);
+                 "/usr/bin/update-alternatives --query %s_%s_conf",
+                 master_link, pattern);
 
         pfile = popen(command, "r");
         if (pfile == NULL) {
@@ -842,19 +977,20 @@ static bool get_gl_alternatives(struct alternatives *info, const char *master_li
                 /* If info->current is not NULL, then it's a fake
                  * alternative, which we won't override
                  */
-                if (!info->current) {
-                    info->current = strdup(value);
+                if (!(*current_target)) {
+                    *current_target = strdup(value);
                     /* Remove newline */
-                    len = strlen(info->current);
-                    if(info->current[len-1] == '\n' )
-                       info->current[len-1] = 0;
+                    len = strlen(*current_target);
+                    if((*current_target)[len-1] == '\n' )
+                       (*current_target)[len-1] = 0;
                 }
                 /* Set the enabled alternatives in the struct */
-                detect_enabled_alternatives(info);
+                /* detect_enabled_alternatives(info); */
+                (*fcn)(info);
             }
 
         }
-        else if (strstr(buffer, "Alternative:") || fake_alternatives_path) {
+        else if (strstr(buffer, "Alternative:") || path) {
             other = strchr(buffer, ch);
             if (other != NULL) {
                 /* Set the available alternatives in the struct */
@@ -863,75 +999,24 @@ static bool get_gl_alternatives(struct alternatives *info, const char *master_li
         }
     }
 
+    current_target = NULL;
+
     return true;
 }
 
 
+static bool get_gl_alternatives(struct alternatives *info, const char *master_link) {
+    return get_alternatives("gl", fake_alternatives_path, detect_enabled_alternatives, info, master_link);
+}
+
+
+static bool get_egl_alternatives(struct alternatives *info, const char *master_link) {
+    return get_alternatives("egl", fake_egl_alternatives_path, detect_enabled_egl_alternatives, info, master_link);
+}
+
+
 static bool get_core_alternatives(struct alternatives *info, const char *master_link) {
-    int len;
-    char command[200];
-    char buffer[1035];
-    _cleanup_pclose_ FILE *pfile = NULL;
-    char *value = NULL;
-    char *other = NULL;
-    const char ch = '/';
-
-    /* Initialise optional values */
-    info->current_core = NULL;
-    info->fglrx_core_available = 0;
-    info->fglrx_core_enabled = 0;
-
-    /* Test */
-    if (fake_core_alternatives_path) {
-        pfile = fopen(fake_core_alternatives_path, "r");
-        if (pfile == NULL) {
-            fprintf(log_handle, "Warning: can't open fake_core_alternatives_path %s\n", fake_core_alternatives_path);
-            return false;
-        }
-        /* Set the enabled alternatives in the struct */
-        detect_enabled_core_alternatives(info);
-    }
-    else {
-        snprintf(command, sizeof(command),
-                 "/usr/bin/update-alternatives --query %s_gfxcore_conf",
-                 master_link);
-
-        pfile = popen(command, "r");
-        if (pfile == NULL) {
-            fprintf(stderr, "Failed to run command: %s\n", command);
-            return false;
-        }
-    }
-
-    while (fgets(buffer, sizeof(buffer), pfile) != NULL) {
-        if (strstr(buffer, "Value:")) {
-            value = strchr(buffer, ch);
-            if (value != NULL) {
-                /* If info->current is not NULL, then it's a fake
-                 * alternative, which we won't override
-                 */
-                if (!info->current_core) {
-                    info->current_core = strdup(value);
-                    /* Remove newline */
-                    len = strlen(info->current_core);
-                    if(info->current_core[len-1] == '\n' )
-                       info->current_core[len-1] = 0;
-                }
-                /* Set the enabled alternatives in the struct */
-                detect_enabled_core_alternatives(info);
-            }
-
-        }
-        else if (strstr(buffer, "Alternative:") || fake_core_alternatives_path) {
-            other = strchr(buffer, ch);
-            if (other != NULL) {
-                /* Set the available alternatives in the struct */
-                detect_available_core_alternatives(info, other);
-            }
-        }
-    }
-
-    return true;
+    return get_alternatives("gfxcore", fake_core_alternatives_path, detect_enabled_core_alternatives, info, master_link);
 }
 
 
@@ -969,9 +1054,16 @@ static bool set_alternative(char *arch_path, char *alternative, char *link_name)
     return (status != -1);
 }
 
+
 /* Get the master link of a gl alternative */
 static bool set_gl_alternative(char *arch_path, char *alternative) {
     return set_alternative(arch_path, alternative, "gl");
+}
+
+
+/* Get the master link of an egl alternative */
+static bool set_egl_alternative(char *arch_path, char *alternative) {
+    return set_alternative(arch_path, alternative, "egl");
 }
 
 
@@ -984,7 +1076,9 @@ static bool set_core_alternative(char *arch_path, char *alternative) {
 static bool select_driver(char *driver) {
     bool status = false;
     _cleanup_free_ char *alternative = NULL;
+    _cleanup_free_ char *egl_alternative = NULL;
     alternative = get_gl_alternative_link(main_arch_path, driver);
+    egl_alternative = get_egl_alternative_link(main_arch_path, driver);
 
     if (alternative == NULL) {
         fprintf(log_handle, "Error: no alternative found for %s\n", driver);
@@ -1007,6 +1101,29 @@ static bool select_driver(char *driver) {
             }
         }
     }
+
+    if (egl_alternative == NULL) {
+        fprintf(log_handle, "Warning: no EGL alternative found for %s\n", driver);
+    }
+    else {
+       /* Set the EGL alternative */
+        status = set_egl_alternative(main_arch_path, egl_alternative);
+
+        /* Only for amd64 */
+        if (status && strcmp(main_arch_path, "x86_64-linux-gnu") == 0) {
+            /* Free the alternative */
+            free(egl_alternative);
+            egl_alternative = NULL;
+
+            /* Try to get the alternative for the other architecture */
+            egl_alternative = get_egl_alternative_link(other_arch_path, driver);
+            if (egl_alternative) {
+                /* No need to check its status */
+                set_egl_alternative(other_arch_path, egl_alternative);
+            }
+        }
+    }
+
     return status;
 }
 
@@ -1049,6 +1166,85 @@ static bool has_cmdline_option(const char *option)
 
 static bool is_disabled_in_cmdline() {
     return has_cmdline_option(KERN_PARAM);
+}
+
+
+/* This is for backward compatibility with anything older than 14.04.5 */
+static bool has_old_lts_stack() {
+    struct utsname uname_data;
+    bool success = false;
+
+    if (uname(&uname_data) >= 0) {
+        char *token, *string, *tofree;
+
+        tofree = string = strdup(uname_data.release);
+
+        if (!string) {
+            fprintf(log_handle, "Error: failed to allocate lts_stack string.\n");
+            return false;
+        }
+
+        char *version = NULL;
+
+        while ((token = strsep(&string, "-")) != NULL) {}
+
+        version = strdup(tofree);
+        free(tofree);
+
+        if (!version) {
+            fprintf(log_handle, "Error: failed to allocate lts_stack version.\n");
+            return false;
+        }
+
+        tofree = string = version;
+
+        int it = 0;
+        int major = 0, minor = 0;
+        while ((token = strsep(&string, ".")) != NULL) {
+            if (it == 0) {
+                major = atoi(token);
+            }
+            if (it == 1) {
+                minor = atoi(token);
+                break;
+            }
+            it++;
+        }
+        free(version);
+
+        /* The linux version needs to be < 4.4 */
+        if ((major < 4) || ((major == 4) && (minor < 4)))
+            success = true;
+    }
+
+    return success;
+}
+
+
+static prime_intel_drv get_prime_intel_driver() {
+    prime_intel_drv driver;
+    if (has_cmdline_option("gpumanager_modesetting")) {
+        driver = MODESETTING;
+        fprintf(log_handle, "Detected boot parameter to force the modesetting driver\n");
+    }
+    else if (has_cmdline_option("gpumanager_uxa")) {
+        driver = UXA;
+        fprintf(log_handle, "Detected boot parameter to force Intel/UXA\n");
+    }
+    else if (has_cmdline_option("gpumanager_sna")) {
+        driver = SNA;
+        fprintf(log_handle, "Detected boot parameter to force Intel/SNA\n");
+    }
+    else if (has_old_lts_stack()) {
+        fprintf(log_handle, "Detected LTS < 14.04.5. Forcing Intel/SNA\n");
+        driver = SNA;
+    }
+    else {
+        /* Anything newer thsn 14.04.4 should use this */
+        driver = MODESETTING;
+    }
+
+    return driver;
 }
 
 
@@ -1121,8 +1317,6 @@ static bool write_to_xorg_conf(struct device **devices, int cards_n,
     else
         driver_line[0] = 0;
 
-    fprintf(log_handle, "Driver line:\n%s\n", driver_line);
-
     for(i = 0; i < cards_n; i++) {
         if (devices[i]->vendor_id == vendor_id) {
             fprintf(file,
@@ -1149,6 +1343,14 @@ static bool write_to_xorg_conf(struct device **devices, int cards_n,
 static bool write_pxpress_xorg_conf(struct device **devices, int cards_n) {
     int i;
     _cleanup_fclose_ FILE *file = NULL;
+    _cleanup_free_ char *accel_method = NULL;
+
+    accel_method = strdup(is_pxpress_dgpu_disabled() ? "sna" : "uxa");
+
+    if (!accel_method) {
+        fprintf(log_handle, "Error: couldn't allocate memory for accel_method\n");
+        return false;
+    }
 
     fprintf(log_handle, "Regenerating xorg.conf. Path: %s\n", xorg_conf_file);
 
@@ -1171,9 +1373,10 @@ static bool write_pxpress_xorg_conf(struct device **devices, int cards_n) {
                 "Section \"Device\"\n"
                 "    Identifier \"intel\"\n"
                 "    Driver \"intel\"\n"
-                "    Option \"AccelMethod\" \"uxa\"\n"
+                "    Option \"AccelMethod\" \"%s\"\n"
                 "    BusID \"PCI:%d@%d:%d:%d\"\n"
                 "EndSection\n\n",
+                accel_method,
                 (int)(devices[i]->bus),
                 (int)(devices[i]->domain),
                 (int)(devices[i]->dev),
@@ -1260,6 +1463,25 @@ static bool is_pxpress_dgpu_disabled() {
 }
 
 
+/* Modify amdpcsdb enabling or disabling the discrete GPU
+ *
+ * EnabledFlags=V0 means off
+ * EnabledFlags=V4 means on
+ */
+static void enable_pxpress_amd_settings(bool discrete_enabled) {
+    unsigned int old_status = discrete_enabled ? 0 : 4;
+    unsigned int new_status = discrete_enabled ? 4 : 0;
+    char command[200];
+
+    snprintf(command, sizeof(command), "sed -i s/EnabledFlags=V%u/EnabledFlags=V%u/g %s",
+             old_status, new_status, amd_pcsdb_file);
+
+    fprintf(log_handle, "Setting EnabledFlags to %u\n", new_status);
+
+    system(command);
+}
+
+
 /* Check if binary drivers are still set in xorg.conf */
 static bool has_xorg_conf_binary_drivers(struct device **devices,
                                  int cards_n) {
@@ -1305,6 +1527,7 @@ static bool check_prime_xorg_conf(struct device **devices,
     int nvidia_set = 0;
     int intel_set = 0;
     int x_options_matches = 0;
+    bool accel_method_matches = true;
     char line[2048];
     char intel_bus_id[100];
     char nvidia_bus_id[100];
@@ -1353,10 +1576,25 @@ static bool check_prime_xorg_conf(struct device **devices,
                     (istrstr(line, "ConstrainCursor") != NULL &&
                     istrstr(line, "off") != NULL) ||
                     (istrstr(line, "IgnoreDisplayDevices") != NULL &&
-                    istrstr(line, "CRT") != NULL) ||
-                    (istrstr(line, "AccelMethod") != NULL &&
-                    istrstr(line, "SNA") != NULL)) {
+                    istrstr(line, "CRT") != NULL)) {
                     x_options_matches += 1;
+                }
+                else if (istrstr(line, "AccelMethod") != NULL) {
+                    if ((prime_intel_driver == SNA) &&
+                        (istrstr(line, "SNA") == NULL)) {
+                        accel_method_matches = false;
+                    }
+                    else if ((prime_intel_driver == UXA) &&
+                        (istrstr(line, "UXA") == NULL)) {
+                        accel_method_matches = false;
+                    }
+                    else if ((prime_intel_driver == MODESETTING) &&
+                        (istrstr(line, "None") == NULL)) {
+                        accel_method_matches = false;
+                    }
+                    else {
+                        x_options_matches += 1;
+                    }
                 }
             }
             else if (strstr(line, intel_bus_id) != NULL) {
@@ -1367,24 +1605,30 @@ static bool check_prime_xorg_conf(struct device **devices,
             }
             /* The driver has to be either intel or nvidia */
             else if (istrstr(line, "Driver") != NULL) {
-                if (istrstr(line, "intel") != NULL){
+                if (((prime_intel_driver == MODESETTING) &&
+                     (istrstr(line, "modesetting") != NULL)) ||
+                    ((prime_intel_driver != MODESETTING) &&
+                     (istrstr(line, "intel") != NULL))) {
                     intel_set += 1;
                 }
                 else if (istrstr(line, "nvidia") != NULL) {
                     nvidia_set += 1;
                 }
             }
-
         }
     }
 
     fprintf(log_handle,
             "intel_matches: %d, nvidia_matches: %d, "
             "intel_set: %d, nvidia_set: %d "
-            "x_options_matches: %d\n",
+            "x_options_matches: %d, accel_method_matches: %d\n",
             intel_matches, nvidia_matches,
             intel_set, nvidia_set,
-            x_options_matches);
+            x_options_matches,
+            accel_method_matches);
+
+    if (!accel_method_matches)
+        return false;
 
     if (cards_n == 1) {
         /* The module was probably unloaded when
@@ -1415,7 +1659,14 @@ static bool check_pxpress_xorg_conf(struct device **devices,
     char intel_bus_id[100];
     char amd_bus_id[100];
     _cleanup_fclose_ FILE *file = NULL;
+    _cleanup_free_ char *accel_method = NULL;
 
+    accel_method = strdup(is_pxpress_dgpu_disabled() ? "sna" : "uxa");
+
+    if (!accel_method) {
+        fprintf(log_handle, "Error: couldn't allocate memory for accel_method\n");
+        return false;
+    }
 
     if (!exists_not_empty(xorg_conf_file))
         return false;
@@ -1461,7 +1712,7 @@ static bool check_pxpress_xorg_conf(struct device **devices,
             /* Parse options here */
             if (istrstr(line, "Option") != NULL) {
                 if (istrstr(line, "AccelMethod") != NULL &&
-                    istrstr(line, "UXA") != NULL) {
+                    istrstr(line, accel_method) != NULL) {
                     x_options_matches += 1;
                 }
             }
@@ -1510,7 +1761,7 @@ static bool check_pxpress_xorg_conf(struct device **devices,
 
 static bool check_vendor_bus_id_xorg_conf(struct device **devices, int cards_n,
                                          unsigned int vendor_id, char *driver) {
-    bool failure = false;
+    bool failure = true;
     bool driver_is_set = false;
     bool has_fglrx = (strcmp(driver, "fglrx") == 0);
     bool fglrx_special_case = false;
@@ -1519,6 +1770,7 @@ static bool check_vendor_bus_id_xorg_conf(struct device **devices, int cards_n,
     int expected_matches = 0;
     char line[4096];
     char bus_id[256];
+    char bus_id_no_domain[256];
     _cleanup_fclose_ FILE *file = NULL;
 
     /* If file doesn't exist or is empty */
@@ -1560,7 +1812,14 @@ static bool check_vendor_bus_id_xorg_conf(struct device **devices, int cards_n,
                                  (int)(devices[i]->domain),
                                  (int)(devices[i]->dev),
                                  (int)(devices[i]->func));
-                        if (strstr(line, bus_id) != NULL) {
+                        /* Compatibility mode if no domain is specified */
+                        snprintf(bus_id_no_domain, sizeof(bus_id_no_domain),
+                                 "\"PCI:%d:%d:%d\"",
+                                 (int)(devices[i]->bus),
+                                 (int)(devices[i]->dev),
+                                 (int)(devices[i]->func));
+                        if ((strstr(line, bus_id) != NULL) ||
+                            (strstr(line, bus_id_no_domain) != NULL)) {
                             matches += 1;
                         }
                     }
@@ -1568,8 +1827,8 @@ static bool check_vendor_bus_id_xorg_conf(struct device **devices, int cards_n,
             }
             else if (istrstr(line, "Driver") != NULL) {
                 driver_is_set = true;
-                if (strstr(line, driver) == NULL) {
-                    failure = true;
+                if (strstr(line, driver) != NULL) {
+                    failure = false;
                 }
             }
         }
@@ -1596,6 +1855,7 @@ static bool check_all_bus_ids_xorg_conf(struct device **devices, int cards_n) {
     int matches = 0;
     char line[4096];
     char bus_id[256];
+    char bus_id_no_domain[256];
     _cleanup_fclose_ FILE *file = NULL;
 
     file = fopen(xorg_conf_file, "r");
@@ -1614,7 +1874,14 @@ static bool check_all_bus_ids_xorg_conf(struct device **devices, int cards_n) {
                      (int)(devices[i]->domain),
                      (int)(devices[i]->dev),
                      (int)(devices[i]->func));
-            if (strstr(line, bus_id) != NULL) {
+
+            /* Compatibility mode if no domain is specified */
+            snprintf(bus_id_no_domain, sizeof(bus_id_no_domain), "\"PCI:%d:%d:%d\"",
+                     (int)(devices[i]->bus),
+                     (int)(devices[i]->dev),
+                     (int)(devices[i]->func));
+
+            if ((strstr(line, bus_id) != NULL) || (strstr(line, bus_id_no_domain) != NULL)) {
                 matches += 1;
             }
         }
@@ -1627,6 +1894,25 @@ static bool check_all_bus_ids_xorg_conf(struct device **devices, int cards_n) {
 static bool write_prime_xorg_conf(struct device **devices, int cards_n) {
     int i;
     _cleanup_fclose_ FILE *file = NULL;
+    _cleanup_free_ char *accel_method = NULL;
+
+    switch (prime_intel_driver) {
+    case MODESETTING:
+        /* glamor seems to fail. Set to "none" instead */
+        accel_method = strdup("    Option \"AccelMethod\" \"None\"\n");
+        break;
+    case UXA:
+        accel_method = strdup("    Option \"AccelMethod\" \"UXA\"\n");
+        break;
+    default:
+        accel_method = strdup("    Option \"AccelMethod\" \"SNA\"\n");
+        break;
+    }
+
+    if (!accel_method) {
+        fprintf(log_handle, "Error: failed to allocate accel_method.\n");
+        return false;
+    }
 
     fprintf(log_handle, "Regenerating xorg.conf. Path: %s\n", xorg_conf_file);
 
@@ -1649,18 +1935,20 @@ static bool write_prime_xorg_conf(struct device **devices, int cards_n) {
             fprintf(file,
                 "Section \"Device\"\n"
                 "    Identifier \"intel\"\n"
-                "    Driver \"intel\"\n"
+                "    Driver \"%s\"\n"
                 "    BusID \"PCI:%d@%d:%d:%d\"\n"
-                "    Option \"AccelMethod\" \"SNA\"\n"
+                "%s"
                 "EndSection\n\n"
                 "Section \"Screen\"\n"
                 "    Identifier \"intel\"\n"
                 "    Device \"intel\"\n"
                 "EndSection\n\n",
+               (prime_intel_driver == MODESETTING) ? "modesetting" : "intel",
                (int)(devices[i]->bus),
                (int)(devices[i]->domain),
                (int)(devices[i]->dev),
-               (int)(devices[i]->func));
+               (int)(devices[i]->func),
+               accel_method);
         }
         else if (devices[i]->vendor_id == NVIDIA) {
             fprintf(file,
@@ -1758,25 +2046,38 @@ static bool prime_enable_discrete() {
     status = prime_set_discrete(1);
 
     /* Load the module */
-    if (status)
+    if (status) {
+        /* This may not be available */
+        load_module("nvidia-modeset");
+        /* drm depends on modeset */
+        load_module("nvidia-drm");
+
         status = load_module("nvidia");
+    }
 
     return status;
 }
 
 
 /* Power off the NVIDIA discrete card */
-static bool prime_disable_discrete() {
+static bool prime_disable_discrete(const int nvidia_version) {
     bool status = false;
+    char command[100];
 
-    /* Tell nvidia-persistenced the nvidia card is about
-     * to be switched off
-     */
-    if (!dry_run)
-        system("/sbin/initctl emit nvidia-off");
+    /* Disable persistence mode (just in case) */
+    sprintf(command, "LD_LIBRARY_PATH=\"/usr/lib/nvidia-%d\" /usr/bin/nvidia-smi -pm 0",
+            nvidia_version);
+    fprintf(log_handle, "Disabling persistence mode\n");
+    system(command);
 
     /* Unload nvidia-uvm or nvidia won't be unloaded */
     unload_module("nvidia-uvm");
+
+    /* Unload nvidia-drm or nvidia won't be unloaded */
+    unload_module("nvidia-drm");
+
+    /* Unload nvidia-modeset or nvidia won't be unloaded */
+    unload_module("nvidia-modeset");
 
     /* Unload the module */
     status = unload_module("nvidia");
@@ -1957,159 +2258,125 @@ static int read_data_from_file(struct device **devices,
 }
 
 
-/* Find pci id in dmesg stream */
-static char * find_pci_pattern(char *line, const char *pattern) {
-    int is_next = 0;
-    char *tok;
-    char *match = NULL;
-
-    tok = strtok(line, " ");
-
-    while (tok != NULL)
-    {
-        tok = strtok (NULL, " ");
-        if (is_next) {
-            if (tok && isdigit(tok[0])) {
-                fprintf(log_handle, "Found %s pci id in dmesg: %s.\n",
-                        pattern, tok);
-                match = strdup(tok);
-                break;
-            }
-            else {
-                break;
-            }
-        }
-        if (tok)
-            is_next = (strcmp(tok, pattern) == 0);
-    }
-
-    return match;
-}
-
-
-/* Parse part of dmesg to extract the PCI BusID */
-static int add_gpu_from_stream(FILE *file, const char *pattern, struct device **devices, int *num) {
+static void add_gpu_from_file(char *filename, char *dirname, struct device **devices,
+                              int *cards_number)
+{
     int status = EOF;
-    char line[1035];
-    _cleanup_free_ char *match = NULL;
-    /* The number of digits we expect to match per line */
-    int desired_matches = 4;
+    char path[PATH_MAX];
+    char pattern[] = "u-d-c-gpu-%04x:%02x:%02x.%d-0x%04x-0x%04x";
 
-    if (!file) {
-        fprintf(log_handle, "Error: passed invalid stream.\n");
-        return 0;
-    }
+    fprintf(log_handle, "Adding GPU from file: %s\n", filename);
 
-    devices[*num] = malloc(sizeof(struct device));
+    /* The number of digits we expect to match in the name */
+    int desired_matches = 6;
 
-    if (!devices[*num])
-        return 0;
+    devices[*cards_number] = malloc(sizeof(struct device));
+    if (!devices[*cards_number])
+    return;
 
-    while (fgets(line, sizeof(line), file)) {
-        match = find_pci_pattern(line, pattern);
-        if (match) {
-            /* Extract the data from the string */
-            status = sscanf(match, "%04x:%02x:%02x.%d\n",
-                            &devices[*num]->domain,
-                            &devices[*num]->bus,
-                            &devices[*num]->dev,
-                            &devices[*num]->func);
-            break;
-        }
-    }
+    /* The name pattern will look like the following:
+     * u-d-c-gpu-0000:09:00.0-0x10de-0x1140
+     */
+    sprintf(path, "%s/%s", dirname, pattern);
+
+    /* Extract the data from the string */
+    status = sscanf(filename, path,
+                    &devices[*cards_number]->domain,
+                    &devices[*cards_number]->bus,
+                    &devices[*cards_number]->dev,
+                    &devices[*cards_number]->func,
+                    &devices[*cards_number]->vendor_id,
+                    &devices[*cards_number]->device_id);
 
     /* Check that we actually matched all the desired digits,
      * as per "desired_matches"
      */
     if (status == EOF || status != desired_matches) {
-        free(devices[*num]);
-        return 0;
+        free(devices[*cards_number]);
+        fprintf(log_handle, "no matches, status = %d, expected = %d\n", status, desired_matches);
+        return;
     }
 
-    if (istrstr(pattern, "nvidia") != NULL) {
-        /* Add fake device and vendor ids */
-        devices[*num]->vendor_id = NVIDIA;
-        devices[*num]->device_id = 0x68d8;
-    }
-    else if (istrstr(pattern, "fglrx") != NULL){
-        /* Add fake device and vendor ids */
-        devices[*num]->vendor_id = AMD;
-        devices[*num]->device_id = 0x68d8;
-    }
+    devices[*cards_number]->has_connected_outputs = -1;
 
-    devices[*num]->has_connected_outputs = -1;
+    fprintf(log_handle, "Adding %04x:%04x in PCI:%02x@%04x:%02x:%d to the list\n",
+            devices[*cards_number]->vendor_id, devices[*cards_number]->device_id,
+            devices[*cards_number]->bus, devices[*cards_number]->domain,
+            devices[*cards_number]->dev, devices[*cards_number]->func);
 
     /* Increment number of cards */
-    *num += 1;
+    *cards_number += 1;
 
-    return status;
+    fprintf(log_handle, "Successfully detected disabled cards. Total number is %d now\n",
+            *cards_number);
 }
 
 
-/* Get the PCI BusID from dmesg
- * Return 0 if it succeeded, 1 or the exit status if it failed.
- */
-static int add_gpu_bus_from_dmesg(const char *pattern, struct device **devices,
-                                  int *cards_number) {
-    int status = 0;
-    char command[100];
-    _cleanup_pclose_ FILE *pfile = NULL;
+/* Look for clues of disabled cards in the directory */
+void find_disabled_cards(char *dir, struct device **devices,
+                         int *cards_n, void (*fcn)(char *, char *,
+                         struct device **, int *))
+{
+    char name[PATH_MAX];
+    struct dirent *dp;
+    DIR *dfd;
 
-    if (dry_run && fake_dmesg_path) {
-        /* If file doesn't exist or is empty */
-        if (!exists_not_empty(fake_dmesg_path))
-            return 1;
+    fprintf(log_handle, "Looking for disabled cards in %s\n", dir);
 
-        snprintf(command, sizeof(command), "grep %s %s",
-                 pattern, fake_dmesg_path);
-    }
-    else {
-        snprintf(command, sizeof(command), "dmesg | grep %s", pattern);
+    if ((dfd = opendir(dir)) == NULL) {
+        fprintf(stderr, "Error: can't open %s\n", dir);
+        return;
     }
 
-    pfile = popen(command, "r");
-    if (pfile == NULL) {
-        /* not an actual error */
-        fprintf(log_handle, "no match for \"%s\" pattern in dmesg\n", pattern);
-        return 0;
+    while ((dp = readdir(dfd)) != NULL) {
+        if (!starts_with(dp->d_name, "u-d-c-gpu-"))
+            continue;
+        if (strlen(dir)+strlen(dp->d_name)+2 > sizeof(name))
+            fprintf(stderr, "Error: name %s/%s too long\n",
+                    dir, dp->d_name);
+        else {
+            sprintf(name, "%s/%s", dir, dp->d_name);
+            (*fcn)(name, dir, devices, cards_n);
+        }
     }
-
-    /* Extract ID from the stream */
-    status = add_gpu_from_stream(pfile, pattern, devices, cards_number);
-
-    fprintf(log_handle, "pci bus from dmesg status %d\n", status);
-
-    return status;
-}
-
-
-/* Get the PCI BusID from dmesg */
-static bool add_amd_gpu_bus_from_dmesg(struct device **devices,
-                                  int *cards_number) {
-
-    return (add_gpu_bus_from_dmesg("fglrx_pci", devices, cards_number) == 0);
-}
-
-
-static bool add_nvidia_gpu_bus_from_dmesg(struct device **devices,
-                                  int *cards_number) {
-    return (add_gpu_bus_from_dmesg("nvidia", devices, cards_number) == 0);
+    closedir(dfd);
 }
 
 
 /* Check if a kernel module is available for the current kernel */
-static bool is_module_available(const char *module) {
-    _cleanup_free_ char *match = NULL;
-    char command[100];
+static bool is_module_available(const char *module)
+{
+    char dir[PATH_MAX];
+    struct dirent *dp;
+    DIR *dfd;
+    struct utsname uname_data;
+    bool status = false;
 
-    snprintf(command, sizeof(command),
-             "find /lib/modules/$(uname -r) -name '%s*.ko' -print",
-             module);
-    match = get_output(command, module, "fb");
-
-    if (!match)
+    if (uname(&uname_data) < 0) {
+        fprintf(stderr, "Error: uname failed\n");
         return false;
-    return true;
+    }
+
+    sprintf(dir, "/lib/modules/%s/updates/dkms", uname_data.release);
+
+    fprintf(log_handle, "Looking for %s modules in %s\n", module, dir);
+
+    if ((dfd = opendir(dir)) == NULL) {
+        fprintf(stderr, "Error: can't open %s\n", dir);
+        return false;
+    }
+
+    while ((dp = readdir(dfd)) != NULL) {
+        if (!starts_with(dp->d_name, module))
+            continue;
+
+        status = true;
+        fprintf(log_handle, "Found %s module: %s\n", module, dp->d_name);
+        break;
+    }
+    closedir(dfd);
+
+    return status;
 }
 
 
@@ -2202,7 +2469,7 @@ static bool is_link(char *file) {
 
 /* See if the device is bound to a driver */
 static bool is_device_bound_to_driver(struct pci_device *info) {
-    char sysfs_path[256];
+    char sysfs_path[1024];
     snprintf(sysfs_path, sizeof(sysfs_path),
              "/sys/bus/pci/devices/%04x:%02x:%02x.%d/driver",
              info->domain, info->bus, info->dev, info->func);
@@ -2211,89 +2478,90 @@ static bool is_device_bound_to_driver(struct pci_device *info) {
 }
 
 
-/* Count the number of outputs connected to the card */
-int count_connected_outputs(int fd, drmModeResPtr res) {
-    int i;
-    int connected_outputs = 0;
-    drmModeConnectorPtr connector;
+/* See if the device is a pci passthrough */
+static bool is_device_pci_passthrough(struct pci_device *info) {
+    enum { BUFFER_SIZE = 1024 };
+    char buf[BUFFER_SIZE], sysfs_path[BUFFER_SIZE], *drv, *name;
+    ssize_t length;
 
-    for (i = 0; i < res->count_connectors; i++) {
-        connector = drmModeGetConnector(fd, res->connectors[i]);
+    length = snprintf(sysfs_path, sizeof(sysfs_path),
+                      "/sys/bus/pci/devices/%04x:%02x:%02x.%d/driver",
+                      info->domain, info->bus, info->dev, info->func);
+    if (length < 0 || length >= sizeof(sysfs_path))
+        return false;
 
-        if (connector) {
-            switch (connector->connection) {
-            case DRM_MODE_CONNECTED:
-                fprintf(log_handle, "output %d:\n", connected_outputs);
-                connected_outputs += 1;
+    length = readlink(sysfs_path, buf, sizeof(buf)-1);
 
-                switch (connector->connector_type) {
-                case DRM_MODE_CONNECTOR_Unknown:
-                    fprintf(log_handle, "\tunknown connector\n");
-                    break;
-                case DRM_MODE_CONNECTOR_VGA:
-                    fprintf(log_handle, "\tVGA connector\n");
-                    break;
-                case DRM_MODE_CONNECTOR_DVII:
-                    fprintf(log_handle, "\tDVII connector\n");
-                    break;
-                case DRM_MODE_CONNECTOR_DVID:
-                    fprintf(log_handle, "\tDVID connector\n");
-                    break;
-                case DRM_MODE_CONNECTOR_DVIA:
-                    fprintf(log_handle, "\tDVIA connector\n");
-                    break;
-                case DRM_MODE_CONNECTOR_Composite:
-                    fprintf(log_handle, "\tComposite connector\n");
-                    break;
-                case DRM_MODE_CONNECTOR_SVIDEO:
-                    fprintf(log_handle, "\tSVIDEO connector\n");
-                    break;
-                case DRM_MODE_CONNECTOR_LVDS:
-                    fprintf(log_handle, "\tLVDS connector\n");
-                    break;
-                case DRM_MODE_CONNECTOR_Component:
-                    fprintf(log_handle, "\tComponent connector\n");
-                    break;
-                case DRM_MODE_CONNECTOR_9PinDIN:
-                    fprintf(log_handle, "\t9PinDIN connector\n");
-                    break;
-                case DRM_MODE_CONNECTOR_DisplayPort:
-                    fprintf(log_handle, "\tDisplayPort connector\n");
-                    break;
-                case DRM_MODE_CONNECTOR_HDMIA:
-                    fprintf(log_handle, "\tHDMIA connector\n");
-                    break;
-                case DRM_MODE_CONNECTOR_HDMIB:
-                    fprintf(log_handle, "\tHDMIB connector\n");
-                    break;
-                case DRM_MODE_CONNECTOR_TV:
-                    fprintf(log_handle, "\tTV connector\n");
-                    break;
-                case DRM_MODE_CONNECTOR_eDP:
-                    fprintf(log_handle, "\teDP connector\n");
-                    break;
-#if 0
-                case DRM_MODE_CONNECTOR_VIRTUAL:
-                    fprintf(log_handle, "VIRTUAL connector\n");
-                    break;
-                case DRM_MODE_CONNECTOR_DSI:
-                    fprintf(log_handle, "DSI connector\n");
-                    break;
-#endif
-                default:
-                    break;
-                }
+    if (length != -1) {
+        buf[length] = '\0';
+
+        if ((drv = strrchr(buf, '/')))
+            name = drv+1;
+        else
+            name = buf;
+
+        if (strcmp(name, "pci-stub") == 0 || strcmp(name, "pciback") == 0)
+            return true;
+    }
+    return false;
+}
 
 
-                break;
-            case DRM_MODE_DISCONNECTED:
-                break;
-            default:
-                break;
-            }
-            drmModeFreeConnector(connector);
+/* Check the drm connector status */
+static bool is_connector_connected(const char *connector) {
+    bool status = false;
+    char line[50];
+    _cleanup_fclose_ FILE *file = NULL;
+
+    file = fopen(connector, "r");
+
+    if (!file)
+        return false;
+
+    while (fgets(line, sizeof(line), file)) {
+        char *tok;
+        tok = strtok(line, " \t");
+        if (starts_with(tok, "connected")) {
+            status = true;
+            break;
         }
     }
+
+    return status;
+}
+
+
+/* Count the number of outputs connected to the card */
+int count_connected_outputs(const char *device_name) {
+    char name[50];
+    struct dirent *dp;
+    DIR *dfd;
+    int connected_outputs = 0;
+    char drm_dir[] = "/sys/class/drm";
+
+    if ((dfd = opendir(drm_dir)) == NULL) {
+        fprintf(stderr, "Warning: can't open %s\n", drm_dir);
+        return connected_outputs;
+    }
+
+    while ((dp = readdir(dfd)) != NULL) {
+        if (!starts_with(dp->d_name, device_name))
+            continue;
+        if (strlen(drm_dir)+strlen(dp->d_name)+2 > sizeof(name))
+            fprintf(stderr, "Warning: name %s/%s too long\n",
+                    drm_dir, dp->d_name);
+        else {
+            /* Open the file for the connector */
+            sprintf(name, "%s/%s/status", drm_dir, dp->d_name);
+            if (is_connector_connected(name)) {
+                fprintf(log_handle, "output %d:\n", connected_outputs);
+                fprintf(log_handle, "\t%s\n", dp->d_name);
+                connected_outputs++;
+            }
+        }
+    }
+    closedir(dfd);
+
     return connected_outputs;
 }
 
@@ -2306,11 +2574,11 @@ static int has_driver_connected_outputs(const char *driver) {
     struct dirent* dir_entry;
     char path[20];
     int fd = 1;
-    drmModeResPtr res;
     drmVersionPtr version;
     int connected_outputs = 0;
     int driver_match = 0;
     char dri_dir[] = "/dev/dri";
+    _cleanup_free_ char *device_path= NULL;
 
     if (NULL == (dir = opendir(dri_dir))) {
         fprintf(log_handle, "Error : Failed to open %s\n", dri_dir);
@@ -2333,6 +2601,9 @@ static int has_driver_connected_outputs(const char *driver) {
                     fprintf(log_handle, "Found \"%s\", driven by \"%s\"\n",
                            path, version->name);
                     driver_match = 1;
+                    device_path = malloc(strlen(dir_entry->d_name)+1);
+                    if (device_path)
+                        strcpy(device_path, dir_entry->d_name);
                     drmFreeVersion(version);
                     break;
                 }
@@ -2352,24 +2623,17 @@ static int has_driver_connected_outputs(const char *driver) {
 
     closedir(dir);
 
+    close(fd);
+
     if (!driver_match)
         return -1;
 
-    res = drmModeGetResources(fd);
-    if (!res) {
-        fprintf(log_handle, "Error: can't get drm resources.\n");
-        drmClose(fd);
+    if (!device_path)
         return -1;
-    }
 
-
-    connected_outputs = count_connected_outputs(fd, res);
+    connected_outputs = count_connected_outputs(device_path);
 
     fprintf(log_handle, "Number of connected outputs for %s: %d\n", path, connected_outputs);
-
-    drmModeFreeResources(res);
-
-    close(fd);
 
     return (connected_outputs > 0);
 }
@@ -2379,6 +2643,7 @@ static int has_driver_connected_outputs(const char *driver) {
 static void add_connected_outputs_info(struct device **devices,
                                        int cards_n) {
     int i;
+    int amdgpu_has_outputs = has_driver_connected_outputs("amdgpu");
     int radeon_has_outputs = has_driver_connected_outputs("radeon");
     int nouveau_has_outputs = has_driver_connected_outputs("nouveau");
     int intel_has_outputs = has_driver_connected_outputs("i915");
@@ -2387,7 +2652,8 @@ static void add_connected_outputs_info(struct device **devices,
         if (devices[i]->vendor_id == INTEL)
             devices[i]->has_connected_outputs = intel_has_outputs;
         else if (devices[i]->vendor_id == AMD)
-            devices[i]->has_connected_outputs = radeon_has_outputs;
+            devices[i]->has_connected_outputs = ((radeon_has_outputs != -1) ? radeon_has_outputs
+                                                 : amdgpu_has_outputs);
         else if (devices[i]->vendor_id == NVIDIA)
             devices[i]->has_connected_outputs = nouveau_has_outputs;
         else
@@ -2676,10 +2942,17 @@ static bool enable_prime(const char *prime_settings,
                         struct alternatives *alternative,
                         struct device **devices,
                         int cards_n) {
-    int major, minor;
+    int major = 0, minor = 0;
     bool bbswitch_status = true, has_version = false;
     bool prime_discrete_on = false;
     bool prime_action_on = false;
+
+    /* We only support Lightdm at this time */
+    if (!is_lightdm_default()) {
+        fprintf(log_handle, "Neither Lightdm nor GDM is the default display "
+                            "manager. Nothing to do\n");
+        return false;
+    }
 
     /* Check the driver version
      * Note: this won't be available when the discrete GPU
@@ -2773,7 +3046,7 @@ static bool enable_prime(const char *prime_settings,
         }
         else {
             fprintf(log_handle, "Powering off the discrete card\n");
-            prime_disable_discrete();
+            prime_disable_discrete(major);
         }
     }
 
@@ -2843,6 +3116,7 @@ static bool enable_pxpress(struct alternatives *alternative,
         if (!alternative->pxpress_enabled) {
             fprintf(log_handle, "Selecting pxpress\n");
             status = select_driver("pxpress");
+            enable_pxpress_amd_settings(false);
         }
         else {
             fprintf(log_handle, "Driver is already loaded and enabled\n");
@@ -2853,6 +3127,7 @@ static bool enable_pxpress(struct alternatives *alternative,
         if (!alternative->fglrx_enabled) {
             fprintf(log_handle, "Selecting fglrx\n");
             status = select_driver("fglrx");
+            enable_pxpress_amd_settings(true);
         }
         else {
             fprintf(log_handle, "Driver is already loaded and enabled\n");
@@ -2907,10 +3182,12 @@ int main(int argc, char *argv[]) {
     bool has_moved_xorg_conf = false;
     bool nvidia_loaded = false, fglrx_loaded = false,
         intel_loaded = false, radeon_loaded = false,
-        nouveau_loaded = false, bbswitch_loaded = false;
+        amdgpu_loaded = false, nouveau_loaded = false,
+        bbswitch_loaded = false;
     bool fglrx_unloaded = false, nvidia_unloaded = false;
     bool fglrx_blacklisted = false, nvidia_blacklisted = false,
-         radeon_blacklisted = false, nouveau_blacklisted = false;
+         radeon_blacklisted = false, amdgpu_blacklisted = false,
+         nouveau_blacklisted = false;
     bool fglrx_kmod_available = false, nvidia_kmod_available = false;
     int offloading = false;
     int status = 0;
@@ -2960,11 +3237,13 @@ int main(int argc, char *argv[]) {
         {"xorg-conf-file", required_argument, 0, 'x'},
         {"amd-pcsdb-file", required_argument, 0, 'd'},
         {"fake-alternative", required_argument, 0, 'a'},
+        {"fake-egl-alternative", required_argument, 0, 'c'},
         {"fake-core-alternative", required_argument, 0, 'q'},
         {"fake-modules-path", required_argument, 0, 'm'},
         {"fake-alternatives-path", required_argument, 0, 'p'},
+        {"fake-egl-alternatives-path", required_argument, 0, 'r'},
         {"fake-core-alternatives-path", required_argument, 0, 'o'},
-        {"fake-dmesg-path", required_argument, 0, 's'},
+        {"gpu-detection-path", required_argument, 0, 's'},
         {"prime-settings", required_argument, 0, 'z'},
         {"bbswitch-path", required_argument, 0, 'y'},
         {"bbswitch-quirks-path", required_argument, 0, 'g'},
@@ -2977,7 +3256,7 @@ int main(int argc, char *argv[]) {
         /* getopt_long stores the option index here. */
         int option_index = 0;
 
-        opt = getopt_long (argc, argv, "lbnfxdampzyghij:::",
+        opt = getopt_long (argc, argv, "a:b:c:d:f:g:h:i:j:k:l:m:n:o:p:q:r:s:x:y:z:",
                         long_options, &option_index);
 
         /* Detect the end of the options. */
@@ -3043,16 +3322,28 @@ int main(int argc, char *argv[]) {
                 break;
             case 'a':
                 /* printf("option -a with value '%s'\n", optarg); */
-                alternative = calloc(1, sizeof(struct alternatives));
                 if (!alternative) {
+                alternative = calloc(1, sizeof(struct alternatives));
+                    if (!alternative)
+                        abort();
+                }
+                alternative->current = strdup(optarg);
+                if (!alternative->current) {
+                    free(alternative);
                     abort();
                 }
-                else {
-                    alternative->current = strdup(optarg);
-                    if (!alternative->current) {
-                        free(alternative);
+                break;
+            case 'c':
+                /* printf("option -a with value '%s'\n", optarg); */
+                if (!alternative) {
+                alternative = calloc(1, sizeof(struct alternatives));
+                    if (!alternative)
                         abort();
-                    }
+                }
+                alternative->current_egl = strdup(optarg);
+                if (!alternative->current_egl) {
+                    free(alternative);
+                    abort();
                 }
                 break;
             case 'q':
@@ -3080,6 +3371,14 @@ int main(int argc, char *argv[]) {
                 else
                     abort();
                 break;
+            case 'r':
+                /* printf("option -p with value '%s'\n", optarg); */
+                fake_egl_alternatives_path = malloc(strlen(optarg) + 1);
+                if (fake_egl_alternatives_path)
+                    strcpy(fake_egl_alternatives_path, optarg);
+                else
+                    abort();
+                break;
             case 'o':
                 /* printf("option -p with value '%s'\n", optarg); */
                 fake_core_alternatives_path = malloc(strlen(optarg) + 1);
@@ -3090,9 +3389,9 @@ int main(int argc, char *argv[]) {
                 break;
             case 's':
                 /* printf("option -p with value '%s'\n", optarg); */
-                fake_dmesg_path = malloc(strlen(optarg) + 1);
-                if (fake_dmesg_path)
-                    strcpy(fake_dmesg_path, optarg);
+                gpu_detection_path = malloc(strlen(optarg) + 1);
+                if (gpu_detection_path)
+                    strcpy(gpu_detection_path, optarg);
                 else
                     abort();
                 break;
@@ -3158,6 +3457,13 @@ int main(int argc, char *argv[]) {
             move_log();
         }
         log_handle = fopen(log_file, "w");
+
+        if (!log_handle) {
+            /* Use stdout */
+            log_handle = stdout;
+            fprintf(log_handle, "Warning: writing to %s failed (%s)\n",
+                    log_file, strerror(errno));
+        }
     }
     else {
         log_handle = stdout;
@@ -3201,6 +3507,9 @@ int main(int argc, char *argv[]) {
             goto end;
         }
     }
+
+    if (!gpu_detection_path)
+        gpu_detection_path = strdup("/run");
 
     if (prime_settings)
         fprintf(log_handle, "prime_settings file: %s\n", prime_settings);
@@ -3298,6 +3607,8 @@ int main(int argc, char *argv[]) {
     intel_loaded = is_module_loaded("i915") || is_module_loaded("i810");
     radeon_loaded = is_module_loaded("radeon");
     radeon_blacklisted = is_module_blacklisted("radeon");
+    amdgpu_loaded = is_module_loaded("amdgpu");
+    amdgpu_blacklisted = is_module_blacklisted("amdgpu");
     nouveau_loaded = is_module_loaded("nouveau");
     nouveau_blacklisted = is_module_blacklisted("nouveau");
 
@@ -3320,10 +3631,15 @@ int main(int argc, char *argv[]) {
     fprintf(log_handle, "Is intel loaded? %s\n", (intel_loaded ? "yes" : "no"));
     fprintf(log_handle, "Is radeon loaded? %s\n", (radeon_loaded ? "yes" : "no"));
     fprintf(log_handle, "Is radeon blacklisted? %s\n", (radeon_blacklisted ? "yes" : "no"));
+    fprintf(log_handle, "Is amdgpu loaded? %s\n", (amdgpu_loaded ? "yes" : "no"));
+    fprintf(log_handle, "Is amdgpu blacklisted? %s\n", (amdgpu_blacklisted ? "yes" : "no"));
     fprintf(log_handle, "Is nouveau loaded? %s\n", (nouveau_loaded ? "yes" : "no"));
     fprintf(log_handle, "Is nouveau blacklisted? %s\n", (nouveau_blacklisted ? "yes" : "no"));
     fprintf(log_handle, "Is fglrx kernel module available? %s\n", (fglrx_kmod_available ? "yes" : "no"));
     fprintf(log_handle, "Is nvidia kernel module available? %s\n", (nvidia_kmod_available ? "yes" : "no"));
+
+    /* Get the driver to use for intel in an optimus system */
+    prime_intel_driver = get_prime_intel_driver();
 
     if (fake_lspci_file) {
         /* Get the current system data from a file */
@@ -3369,6 +3685,11 @@ int main(int argc, char *argv[]) {
 
                 if (!is_device_bound_to_driver(info)) {
                     fprintf(log_handle, "The device is not bound to any driver. Skipping...\n");
+                    continue;
+                }
+
+                if (is_device_pci_passthrough(info)) {
+                    fprintf(log_handle, "The device is a pci passthrough. Skipping...\n");
                     continue;
                 }
 
@@ -3477,6 +3798,7 @@ int main(int argc, char *argv[]) {
     if (!alternative)
         alternative = calloc(1, sizeof(struct alternatives));
     get_gl_alternatives(alternative, main_arch_path);
+    get_egl_alternatives(alternative, main_arch_path);
     get_core_alternatives(alternative, main_arch_path);
 
     if (!alternative->current) {
@@ -3486,19 +3808,26 @@ int main(int argc, char *argv[]) {
 
     fprintf(log_handle, "Current alternative: %s\n", alternative->current);
     fprintf(log_handle, "Current core alternative: %s\n", alternative->current_core);
+    fprintf(log_handle, "Current egl alternative: %s\n", alternative->current_egl);
 
     fprintf(log_handle, "Is nvidia enabled? %s\n", alternative->nvidia_enabled ? "yes" : "no");
+    fprintf(log_handle, "Is nvidia egl enabled? %s\n", alternative->nvidia_egl_enabled ? "yes" : "no");
     fprintf(log_handle, "Is fglrx enabled? %s\n", alternative->fglrx_enabled ? "yes" : "no");
     fprintf(log_handle, "Is mesa enabled? %s\n", alternative->mesa_enabled ? "yes" : "no");
+    fprintf(log_handle, "Is mesa egl enabled? %s\n", alternative->mesa_egl_enabled ? "yes" : "no");
     fprintf(log_handle, "Is pxpress enabled? %s\n", alternative->pxpress_enabled ? "yes" : "no");
     fprintf(log_handle, "Is prime enabled? %s\n", alternative->prime_enabled ? "yes" : "no");
+    fprintf(log_handle, "Is prime egl enabled? %s\n", alternative->prime_egl_enabled ? "yes" : "no");
 
     fprintf(log_handle, "Is nvidia available? %s\n", alternative->nvidia_available ? "yes" : "no");
+    fprintf(log_handle, "Is nvidia egl available? %s\n", alternative->nvidia_egl_available ? "yes" : "no");
     fprintf(log_handle, "Is fglrx available? %s\n", alternative->fglrx_available ? "yes" : "no");
     fprintf(log_handle, "Is fglrx-core available? %s\n", alternative->fglrx_core_available ? "yes" : "no");
     fprintf(log_handle, "Is mesa available? %s\n", alternative->mesa_available ? "yes" : "no");
+    fprintf(log_handle, "Is mesa egl available? %s\n", alternative->mesa_egl_available ? "yes" : "no");
     fprintf(log_handle, "Is pxpress available? %s\n", alternative->pxpress_available ? "yes" : "no");
     fprintf(log_handle, "Is prime available? %s\n", alternative->prime_available ? "yes" : "no");
+    fprintf(log_handle, "Is prime egl available? %s\n", alternative->prime_egl_available ? "yes" : "no");
 
     /* If the module is loaded but the alternatives are not there
      * we're probably dealing with a proprietary installer
@@ -3526,8 +3855,9 @@ int main(int argc, char *argv[]) {
             if (offloading && fglrx_unloaded) {
                 fprintf(log_handle, "PowerXpress detected\n");
 
-                /* Get the BusID of the disabled discrete from dmesg */
-                add_amd_gpu_bus_from_dmesg(current_devices, &cards_n);
+                /* Get the details of the disabled discrete from a file */
+                find_disabled_cards(gpu_detection_path, current_devices,
+                                    &cards_n, add_gpu_from_file);
 
                 /* Get data about the first discrete card */
                 get_first_discrete(current_devices, cards_n,
@@ -3542,8 +3872,9 @@ int main(int argc, char *argv[]) {
                 /* NVIDIA PRIME */
                 fprintf(log_handle, "PRIME detected\n");
 
-                /* Get the BusID of the disabled discrete from dmesg */
-                add_nvidia_gpu_bus_from_dmesg(current_devices, &cards_n);
+                /* Get the details of the disabled discrete from a file */
+                find_disabled_cards(gpu_detection_path, current_devices,
+                                    &cards_n, add_gpu_from_file);
 
                 /* Get data about the first discrete card */
                 get_first_discrete(current_devices, cards_n,
@@ -3578,7 +3909,8 @@ int main(int argc, char *argv[]) {
         }
         else if (boot_vga_vendor_id == AMD) {
             /* if fglrx is loaded enable fglrx alternative */
-            if (((fglrx_loaded || fglrx_kmod_available) && !fglrx_blacklisted) && (!radeon_loaded || radeon_blacklisted)) {
+            if (((fglrx_loaded || fglrx_kmod_available) && !fglrx_blacklisted) &&
+                (!radeon_loaded || radeon_blacklisted) && (!amdgpu_loaded || amdgpu_blacklisted)) {
                 if (!alternative->fglrx_enabled) {
                     /* Try to enable fglrx */
                     enable_fglrx(alternative, boot_vga_vendor_id, current_devices, cards_n);
@@ -3593,7 +3925,7 @@ int main(int argc, char *argv[]) {
                 /* If both the closed kernel module and the open
                  * kernel module are loaded, then we're in trouble
                  */
-                if (fglrx_loaded && radeon_loaded) {
+                if (fglrx_loaded && (radeon_loaded || amdgpu_loaded)) {
                     /* Fake a system change to trigger
                      * a reconfiguration
                      */
@@ -3676,7 +4008,8 @@ int main(int argc, char *argv[]) {
         if (boot_vga_vendor_id == INTEL) {
             fprintf(log_handle, "Intel IGP detected\n");
             /* AMD PowerXpress */
-            if (offloading && intel_loaded && (fglrx_loaded || fglrx_kmod_available) && (!radeon_loaded || radeon_blacklisted)) {
+            if (offloading && intel_loaded && (fglrx_loaded || fglrx_kmod_available) &&
+                (!radeon_loaded || radeon_blacklisted) && (!amdgpu_loaded || amdgpu_blacklisted)) {
                 fprintf(log_handle, "PowerXpress detected\n");
 
                 enable_pxpress(alternative, current_devices, cards_n);
@@ -3761,7 +4094,8 @@ int main(int argc, char *argv[]) {
                     fprintf(log_handle, "Discrete AMD card detected\n");
 
                     /* Kernel module is available */
-                    if (((fglrx_loaded || fglrx_kmod_available) && !fglrx_blacklisted) && (!radeon_loaded || radeon_blacklisted)) {
+                    if (((fglrx_loaded || fglrx_kmod_available) && !fglrx_blacklisted) &&
+                        (!radeon_loaded || radeon_blacklisted) && (!amdgpu_loaded || amdgpu_blacklisted)) {
                         /* Try to enable fglrx */
                         enable_fglrx(alternative, discrete_vendor_id, current_devices, cards_n);
                     }
@@ -3770,7 +4104,7 @@ int main(int argc, char *argv[]) {
                         /* If both the closed kernel module and the open
                          * kernel module are loaded, then we're in trouble
                          */
-                        if (fglrx_loaded && radeon_loaded) {
+                        if (fglrx_loaded && (radeon_loaded || amdgpu_loaded)) {
                             /* Fake a system change to trigger
                              * a reconfiguration
                              */
@@ -3813,7 +4147,8 @@ int main(int argc, char *argv[]) {
 
 
                 /* Kernel module is available */
-                if (((fglrx_loaded || fglrx_kmod_available) && !fglrx_blacklisted) && (!radeon_loaded || radeon_blacklisted)) {
+                if (((fglrx_loaded || fglrx_kmod_available) && !fglrx_blacklisted) &&
+                    (!radeon_loaded || radeon_blacklisted) && (!amdgpu_loaded || amdgpu_blacklisted)) {
                     /* Try to enable fglrx */
                     enable_fglrx(alternative, discrete_vendor_id, current_devices, cards_n);
                 }
@@ -3822,7 +4157,7 @@ int main(int argc, char *argv[]) {
                     /* If both the closed kernel module and the open
                      * kernel module are loaded, then we're in trouble
                      */
-                    if (fglrx_loaded && radeon_loaded) {
+                    if (fglrx_loaded && (radeon_loaded || amdgpu_loaded)) {
                         /* Fake a system change to trigger
                          * a reconfiguration
                          */
@@ -3861,7 +4196,8 @@ int main(int argc, char *argv[]) {
                 else {
                     /* See if fglrx is in use */
                     /* Kernel module is available */
-                    if (((fglrx_loaded || fglrx_kmod_available) && !fglrx_blacklisted) && (!radeon_loaded || radeon_blacklisted)) {
+                    if (((fglrx_loaded || fglrx_kmod_available) && !fglrx_blacklisted) &&
+                        (!radeon_loaded || radeon_blacklisted) && (!amdgpu_loaded || amdgpu_blacklisted)) {
                         /* Try to enable fglrx */
                         enable_fglrx(alternative, boot_vga_vendor_id, current_devices, cards_n);
                     }
@@ -3870,7 +4206,7 @@ int main(int argc, char *argv[]) {
                         /* If both the closed kernel module and the open
                          * kernel module are loaded, then we're in trouble
                          */
-                        if ((fglrx_loaded && radeon_loaded) ||
+                        if ((fglrx_loaded && (radeon_loaded || amdgpu_loaded)) ||
                             (nvidia_loaded && nouveau_loaded)) {
                             /* Fake a system change to trigger
                              * a reconfiguration
@@ -3944,17 +4280,24 @@ end:
     if (alternative) {
         if (alternative->current)
             free(alternative->current);
+        if (alternative->current_core)
+            free(alternative->current_core);
+        if (alternative->current_egl)
+            free(alternative->current_egl);
         free(alternative);
     }
 
     if (fake_alternatives_path)
         free(fake_alternatives_path);
 
+    if (fake_egl_alternatives_path)
+        free(fake_egl_alternatives_path);
+
     if (fake_core_alternatives_path)
         free(fake_core_alternatives_path);
 
-    if (fake_dmesg_path)
-        free(fake_dmesg_path);
+    if (gpu_detection_path)
+        free(gpu_detection_path);
 
     if (fake_modules_path)
         free(fake_modules_path);
