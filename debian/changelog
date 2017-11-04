@@ -1,3 +1,9 @@
+ubuntu-drivers-common (1:0.4.17.3linuxmint1) sylvia; urgency=medium
+
+  * Patch upstream changes up to 1:0.4.17.3
+
+ -- Clement Lefebvre <root@linuxmint.com>  Sat, 04 Nov 2017 14:33:58 +0000
+
 ubuntu-drivers-common (1:0.4.17.2linuxmint1) sarah; urgency=medium
 
   * Patch upstream changes up to 1:0.4.17.2
